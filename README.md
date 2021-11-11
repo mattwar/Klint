@@ -1,0 +1,2 @@
+#KLINT - Kusto Linter
+
