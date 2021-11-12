@@ -147,6 +147,22 @@ public class RunnerTests
     }
 
     [TestMethod]
+    public async Task TestFile_TwoQueryFiles()
+    {
+        await TestRunnerCacheOnlyAsync($"-database Samples Queries/OneQueryNoErrorsSamplesDb.kql Queries/TwoQueriesNoErrorsSamplesDb.kql", 
+$@"Queries/OneQueryNoErrorsSamplesDb.kql: succeeded
+Queries/TwoQueriesNoErrorsSamplesDb.kql: succeeded");
+    }
+
+    [TestMethod]
+    public async Task TestFile_Pattern()
+    {
+        await TestRunnerCacheOnlyAsync($"-database Samples Queries/*NoErrors*.kql",
+$@"Queries/OneQueryNoErrorsSamplesDb.kql: succeeded
+Queries/TwoQueriesNoErrorsSamplesDb.kql: succeeded");
+    }
+
+    [TestMethod]
     public async Task TestFile_UnknownTable_Fails()
     {
         await TestFileFailsAsync("UnknownTable.kql", "(1, 1): error: KS204 - The name 'FlurgEvents' does not refer to any known table, tabular variable or function.");

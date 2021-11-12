@@ -97,10 +97,12 @@ public class Runner
             actionTaken = true;
         }
 
+        var filePaths = FilePatterns.GetFilePaths(options.FilePaths).ToList();
+
         // pre-load default database schema if analysis is to occur
         if (defaultDatabaseName != null 
             && loader != null
-            && (pipedInput != null || options.FilePaths.Count > 0))
+            && (pipedInput != null || filePaths.Count > 0))
         {
             globals = await loader.AddOrUpdateDefaultDatabaseAsync(globals, defaultDatabaseName, defaultClusterName);
         }
@@ -115,9 +117,9 @@ public class Runner
             actionTaken = true;
         }
 
-        if (options.FilePaths.Count > 0)
+        if (filePaths.Count > 0)
         {
-            foreach (var filePath in options.FilePaths)
+            foreach (var filePath in filePaths)
             {
                 var fileText = await File.ReadAllTextAsync(filePath);
                 await AnalyzeAsync(fileText, filePath, analyzer);
@@ -238,6 +240,4 @@ public class Runner
             }
         }
     }
-
-
 }
