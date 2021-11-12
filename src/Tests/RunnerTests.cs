@@ -4,6 +4,7 @@ using System.Text;
 using System.Threading.Tasks;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Klint;
+using Kusto.Language;
 
 namespace Tests;
 
@@ -23,7 +24,7 @@ public class RunnerTests
     [TestMethod]
     public async Task TestUnknowndOption()
     {
-        await TestRunnerAsync("-whatever", "klint: unknown option: -whatever");
+        await TestRunnerAsync("-whatever", "unknown option: -whatever");
     }
 
     [TestMethod]
@@ -38,7 +39,7 @@ public class RunnerTests
 
         Assert.IsFalse(Directory.Exists(cacheDirectory), "cache directory not deleted");
 
-        await TestRunnerAsync($"-connection {HelpConnection} -cache {cacheDirectory} -generate", $"klint: schema cache generated at: {cacheDirectory}");
+        await TestRunnerAsync($"-connection {HelpConnection} -cache {cacheDirectory} -generate", $"schema cache generated at: {cacheDirectory}");
 
         Assert.IsTrue(Directory.Exists(cacheDirectory), "Cache directory not created");
 
@@ -60,7 +61,7 @@ public class RunnerTests
     {
         await TestRunnerNoSchemaAsync("", "print x=10 | where y > 0", 
 @"input: failed
-(1, 20): error: The name 'y' does not refer to any known column, table, variable or function.");
+(1, 20): error: KS142 - The name 'y' does not refer to any known column, table, variable or function.");
     }
 
     [TestMethod]
@@ -68,7 +69,7 @@ public class RunnerTests
     {
         await TestRunnerNoSchemaAsync("-database Samples", "StormEvents",
 @"input: failed
-(1, 1): error: The name 'StormEvents' does not refer to any known column, table, variable or function.");
+(1, 1): error: KS142 - The name 'StormEvents' does not refer to any known column, table, variable or function.");
     }
 
     [TestMethod]
@@ -100,7 +101,7 @@ public class RunnerTests
     {
         await TestRunnerCacheOnlyAsync($"-cluster help -database Samples", "StormEvents | where Source has 'ABC'",
 @"input: failed
-(1, 21): suggestion: Avoid using short strings (less than 4 characters) for string comparison operations (see: https://aka.ms/kusto.stringterms).");
+(1, 21): suggestion: KS503 - Avoid using short strings (less than 4 characters) for string comparison operations (see: https://aka.ms/kusto.stringterms).");
     }
 
     [TestMethod]
@@ -118,7 +119,7 @@ public class RunnerTests
     [TestMethod]
     public async Task TestFile_UnknownTable_Fails()
     {
-        await TestFileFailsAsync("UnknownTable.kql", "(1, 1): error: The name 'FlurgEvents' does not refer to any known table, tabular variable or function.");
+        await TestFileFailsAsync("UnknownTable.kql", "(1, 1): error: KS204 - The name 'FlurgEvents' does not refer to any known table, tabular variable or function.");
     }
 
     public async Task TestFileSucceedsAsync(string filename)
@@ -140,15 +141,10 @@ public class RunnerTests
 
     private async Task TestRunnerAsync(string commandLine, string? inputText, string expectedOutput)
     {
-        TextReader? input = null;
-        if (inputText != null)
-        {
-            input = new StringReader(inputText);
-        }
-
         var output = new StringWriter();
 
-        await Runner.RunAsync(commandLine, output, input);
+        var runner = new Runner(output);
+        await runner.RunAsync(commandLine, inputText);
 
         output.Flush();
         var actualOutput = output.ToString();
@@ -161,7 +157,7 @@ public class RunnerTests
         return TestRunnerNoCacheAsync(commandLine, null, expectedOutput);
     }
 
-    private async Task TestRunnerNoCacheAsync(string commandLine, string query, string expectedOutput)
+    private async Task TestRunnerNoCacheAsync(string commandLine, string? query, string expectedOutput)
     {
         var tmpCache = "TestCache" + System.Guid.NewGuid();
         Assert.IsFalse(Directory.Exists(tmpCache), "temp cache already exists?");
@@ -181,7 +177,7 @@ public class RunnerTests
         return TestRunnerCacheOnlyAsync(commandLine, null, expectedOutput);
     }
 
-    private async Task TestRunnerCacheOnlyAsync(string commandLine, string query, string expectedOutput)
+    private async Task TestRunnerCacheOnlyAsync(string commandLine, string? query, string expectedOutput)
     {
         Assert.IsTrue(Directory.Exists(TestCache), "static cache does not exist");
         await TestRunnerAsync(commandLine + $" -cluster {HelpCluster} -cache {TestCache}", query, expectedOutput);
@@ -192,7 +188,7 @@ public class RunnerTests
         return TestRunnerNoSchemaAsync(commandLine, null, expectedOutput);
     }
 
-    private async Task TestRunnerNoSchemaAsync(string commandLine, string query, string expectedOutput)
+    private async Task TestRunnerNoSchemaAsync(string commandLine, string? query, string expectedOutput)
     {
         await TestRunnerAsync(commandLine + $" -nocache", query, expectedOutput);
     }

@@ -1,3 +1,11 @@
 ﻿using Klint;
 
-await Runner.RunAsync(args, Console.Out, Console.IsInputRedirected ? Console.In : null);
+string? pipedInput = null;
+if (Console.IsInputRedirected)
+{
+    pipedInput = await Console.In.ReadToEndAsync();
+}
+
+var runner = new Runner(Console.Out);
+
+await runner.RunAsync(args, pipedInput);

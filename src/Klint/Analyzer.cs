@@ -51,11 +51,11 @@ public class Analyzer
     {
         if (script.TryGetLineAndOffset(d.Start, out var line, out var offset))
         {
-            return $"({line}, {offset}): {d.Severity.ToString().ToLower()}: {d.Message}";
+            return $"({line}, {offset}): {d.Severity.ToString().ToLower()}: {d.Code} - {d.Message}";
         }
         else
         {
-            return $"{d.Severity.ToString().ToLower()}: {d.Message}";
+            return $"{d.Severity.ToString().ToLower()}: {d.Code} - {d.Message}";
         }
     }
 }

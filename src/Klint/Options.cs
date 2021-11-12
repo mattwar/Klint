@@ -93,7 +93,7 @@ examples:
    klint -connection ""https://help.kusto.windows.net;Fed=true"" -database Samples MyQueries.kql
 
    # Run analysis on MyQueries.kql using database schemas found in local cache only
-   klint -cluser help.kusto.windows.net -database Samples MyQueries.kql
+   klint -cluster help.kusto.windows.net -database Samples MyQueries.kql
 
    # Run analysis on MyQueries.kql using fresh database schemas from the server only
    klint -connection ""https://help.kusto.windows.net;Fed=true"" -database Samples -nocache MyQueries.kql

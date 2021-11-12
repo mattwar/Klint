@@ -4,11 +4,18 @@ using Kusto.Language;
 namespace Klint;
 
 
-public static class Runner
+public class Runner
 {
     public static readonly string DefaultCachePath = "klint_schema_cache";
 
-    public static async Task RunAsync(string[] args, TextWriter outputWriter, TextReader? inputReader = null)
+    private readonly TextWriter _output;
+
+    public Runner(TextWriter output)
+    {
+        _output = output;
+    }
+
+    public async Task RunAsync(string[] args, string? pipedInput = null)
     {
         var options = OptionsParser.Parse(args);
 
@@ -16,7 +23,7 @@ public static class Runner
         {
             foreach (var error in options.Errors)
             {
-                outputWriter.WriteLine($"klint: {error}");
+                LogMessage(error);
             }
 
             return;
@@ -78,7 +85,7 @@ public static class Runner
         if (options.GenerateCache == true && cachedLoader != null)
         {
             await GenerateCacheAsync(cachedLoader, CancellationToken.None).ConfigureAwait(false);
-            outputWriter.WriteLine($"klint: schema cache generated at: {cachePath}");
+            LogMessage($"schema cache generated at: {cachePath}");
             return;
         }
 
@@ -88,9 +95,22 @@ public static class Runner
             globals = await loader.AddOrUpdateDefaultDatabaseAsync(globals, defaultDatabaseName, defaultClusterName);
         }
 
+        if (pipedInput == null && options.FilePaths.Count == 0)
+        {
+            LogMessage("no input");
+            DisplayHelp();
+            return;
+        }
+
         // now do the actual analysis ...
+
         var resolver = new SymbolResolver(loader);
         var analyzer = new Analyzer(globals, resolver);
+
+        if (pipedInput != null)
+        {
+            await AnalyzeAsync(pipedInput, "input", analyzer);
+        }
 
         if (options.FilePaths.Count > 0)
         {
@@ -100,42 +120,29 @@ public static class Runner
                 await AnalyzeAsync(fileText, filePath, analyzer);
             }
         }
-        else if (inputReader != null)
-        {
-            var fileText = await inputReader.ReadToEndAsync();
-            await AnalyzeAsync(fileText, "input", analyzer);
-        }
-        else
-        {
-            outputWriter.WriteLine("klint: no input");
-            outputWriter.WriteLine();
-            DisplayHelp();
-        }
-
+        
         async Task AnalyzeAsync(string text, string source, Analyzer analyzer)
         {
-            outputWriter.Write($"{source}: ");
-
             var analysis = await analyzer.AnalyzeAsync(text, CancellationToken.None);
 
             if (analysis.Success)
             {
-                outputWriter.WriteLine("succeeded");
+                LogMessage($"{source}: succeeded");
             }
             else
             {
-                outputWriter.WriteLine("failed");
+                LogMessage($"{source}: failed");
 
                 foreach (var message in analysis.Messages)
                 {
-                    outputWriter.WriteLine(message);
+                    _output.WriteLine(message);
                 }
             }
         }
 
         void DisplayHelp()
         {
-            outputWriter.WriteLine(OptionsParser.HelpText);
+            _output.WriteLine(OptionsParser.HelpText);
         }
     }
 
@@ -160,7 +167,12 @@ public static class Runner
         }
     }
 
-    public static Task RunAsync(string commandLine, TextWriter outputWriter, TextReader? inputReader = null)
+    private void LogMessage(string message)
+    {
+        _output.WriteLine(message);
+    }
+
+    public Task RunAsync(string commandLine, string? pipedInput = null)
     {
         var args = SplitCommandLine(commandLine).ToArray();
 
@@ -169,7 +181,7 @@ public static class Runner
             args = args.Skip(1).ToArray();
         }
 
-        return RunAsync(args, outputWriter, inputReader);
+        return RunAsync(args, pipedInput);
     }
 
     private static bool IsThisProgram(string path)
