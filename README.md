@@ -1,5 +1,8 @@
 ## KLINT - A Kusto Linter (static analyzer)
 
+
+### Syntax
+
     klint [options] <files>
 
 ### options:
@@ -8,9 +11,14 @@
     -connection <string>  the connection to use to access schema from the server
     -cache <path>         overrides the default path to the local schema cache directory
     -nocache              disables use of the local schema cache
-    -generate             generates cached schemas for all databases (does not do analysis)
+    -generate             generates cached schemas for all databases
+    -delete               deletes all cached schemas
     -cluster <name>       the current cluster in scope (if no connection specified)
     -database <name>      the current database in scope (if not specified by connection)
+
+### files:
+
+  One or more file paths or file path patterns.
 
 ### examples:
 
@@ -30,6 +38,10 @@
 
     klint -nocache MyQueries.kql
 
-#### Pre-generate local schema cache (does not run analysis)
+#### Pre-generate local schema cache 
 
     klint -connection "https://help.kusto.windows.net;Fed=true" -generate
+
+#### Delete all cached schemas
+
+    klint -delete
