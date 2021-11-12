@@ -12,7 +12,7 @@ namespace Tests;
 public class RunnerTests
 {
     private static readonly string HelpCluster = "help.kusto.windows.net";
-    private static readonly string HelpConnection = $"https://{HelpCluster};Fed=true";
+    private static readonly string HelpConnection = "https://help.kusto.windows.net;Fed=true";
     private static readonly string TestCache = "Schemas";
 
     [TestMethod]
@@ -28,36 +28,66 @@ public class RunnerTests
     }
 
     [TestMethod]
-    public async Task TestConnection_GenerateSchema()
+    public async Task TestCache_Generate()
     {
-        var cacheDirectory = "GeneratedSchemas";
+        var testCachePath = GetTestCachePath();
 
-        if (Directory.Exists(cacheDirectory))
+        Assert.IsFalse(Directory.Exists(testCachePath), "cache directory already exists?");
+
+        try
         {
-            Directory.Delete(cacheDirectory, true);
+            await TestRunnerAsync($"-connection {HelpConnection} -cache {testCachePath} -generate", $"schema cache generated");
+
+            Assert.IsTrue(Directory.Exists(testCachePath), "Cache directory not created");
+
+            var clusterCache = Path.Combine(testCachePath, HelpCluster);
+            Assert.IsTrue(Directory.Exists(clusterCache), "Cluster cache directory not created.");
+
+            var samplesFile = Path.Combine(clusterCache, "Samples.json");
+            Assert.IsTrue(File.Exists(samplesFile), "Samples.json file not created");
         }
-
-        Assert.IsFalse(Directory.Exists(cacheDirectory), "cache directory not deleted");
-
-        await TestRunnerAsync($"-connection {HelpConnection} -cache {cacheDirectory} -generate", $"schema cache generated at: {cacheDirectory}");
-
-        Assert.IsTrue(Directory.Exists(cacheDirectory), "Cache directory not created");
-
-        var clusterCache = Path.Combine(cacheDirectory, HelpCluster);
-        Assert.IsTrue(Directory.Exists(clusterCache), "Cluster cache directory not created.");
-
-        var samplesFile = Path.Combine(clusterCache, "Samples.json");
-        Assert.IsTrue(File.Exists(samplesFile), "Samples.json file not created");
+        finally
+        {
+            if (Directory.Exists(testCachePath))
+            {
+                Directory.Delete(testCachePath, true);
+            }
+        }
     }
 
     [TestMethod]
-    public async Task TestNoSchemaSucceeds()
+    public async Task TestCache_Delete()
+    {
+        var testCachePath = GetTestCachePath();
+
+        Assert.IsFalse(Directory.Exists(testCachePath), "cache directory already exists?");
+
+        try
+        {
+            Directory.CreateDirectory(testCachePath);
+            Assert.IsTrue(Directory.Exists(testCachePath), "cache directory not created");
+
+            await TestRunnerAsync($"-cache {testCachePath} -delete", $"schema cache deleted");
+
+            Assert.IsFalse(Directory.Exists(testCachePath), "cache directory not deleted");
+        }
+        finally
+        {
+            if (Directory.Exists(testCachePath))
+            {
+                Directory.Delete(testCachePath, true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task TestNoSchema()
     {
         await TestRunnerNoSchemaAsync("", "print x=10", "input: succeeded");
     }
 
     [TestMethod]
-    public async Task TestNoSchemaFails()
+    public async Task TestNoSchema_Fails()
     {
         await TestRunnerNoSchemaAsync("", "print x=10 | where y > 0", 
 @"input: failed
@@ -65,7 +95,7 @@ public class RunnerTests
     }
 
     [TestMethod]
-    public async Task TestDatabaseNoSchemaFails()
+    public async Task TestNoSchema_Database_Fails()
     {
         await TestRunnerNoSchemaAsync("-database Samples", "StormEvents",
 @"input: failed
@@ -73,25 +103,25 @@ public class RunnerTests
     }
 
     [TestMethod]
-    public async Task TestConnectionNoDatabase_NoCache()
+    public async Task TestServerOnly_ConnectionNoDatabase()
     {
-        await TestRunnerNoCacheAsync("", "database('Samples').StormEvents", "input: succeeded");
+        await TestRunnerServerOnlyAsync("", "database('Samples').StormEvents", "input: succeeded");
     }
 
     [TestMethod]
-    public async Task TestConnectionAndDatabase_NoCache()
+    public async Task TestServerOnly_ConnectionAndDatabase()
     {
-        await TestRunnerNoCacheAsync("-database Samples", "StormEvents", "input: succeeded");
+        await TestRunnerServerOnlyAsync("-database Samples", "StormEvents", "input: succeeded");
     }
 
     [TestMethod]
-    public async Task TestClusterAndDatabase_CacheOnly()
+    public async Task TestCacheOnly_ClusterAndDatabase()
     {
         await TestRunnerCacheOnlyAsync($"-cluster help -database Samples", "StormEvents", "input: succeeded");
     }
 
     [TestMethod]
-    public async Task TestClusterNoDatabase_CacheOnly()
+    public async Task TestCacheOnly_ClusterNoDatabase()
     {
         await TestRunnerCacheOnlyAsync($"-cluster help", "database('Samples').StormEvents", "input: succeeded");       
     }
@@ -105,13 +135,13 @@ public class RunnerTests
     }
 
     [TestMethod]
-    public async Task TestFile_OneQuery_Succeeds()
+    public async Task TestFile_OneQuery()
     {
         await TestFileSucceedsAsync("OneQueryNoErrorsSamplesDb.kql");
     }
 
     [TestMethod]
-    public async Task TestFile_TwoQueries_Succeeds()
+    public async Task TestFile_TwoQueries()
     {
         await TestFileSucceedsAsync("TwoQueriesNoErrorsSamplesDb.kql");
     }
@@ -152,14 +182,14 @@ public class RunnerTests
         AssertOutputExqual(expectedOutput, actualOutput);
     }
 
-    private Task TestRunnerNoCacheAsync(string commandLine, string expectedOutput)
+    private Task TestRunnerServerOnlyAsync(string commandLine, string expectedOutput)
     {
-        return TestRunnerNoCacheAsync(commandLine, null, expectedOutput);
+        return TestRunnerServerOnlyAsync(commandLine, null, expectedOutput);
     }
 
-    private async Task TestRunnerNoCacheAsync(string commandLine, string? query, string expectedOutput)
+    private async Task TestRunnerServerOnlyAsync(string commandLine, string? query, string expectedOutput)
     {
-        var tmpCache = "TestCache" + System.Guid.NewGuid();
+        var tmpCache = GetTestCachePath();
         Assert.IsFalse(Directory.Exists(tmpCache), "temp cache already exists?");
 
         await TestRunnerAsync(commandLine + $" -connection {HelpConnection} -nocache -cache {tmpCache}", query, expectedOutput);
@@ -191,6 +221,11 @@ public class RunnerTests
     private async Task TestRunnerNoSchemaAsync(string commandLine, string? query, string expectedOutput)
     {
         await TestRunnerAsync(commandLine + $" -nocache", query, expectedOutput);
+    }
+
+    private static string GetTestCachePath()
+    {
+        return "TestCache_" + System.Guid.NewGuid();
     }
 
     private void AssertOutputExqual(string expected, string actual, string? message = null)

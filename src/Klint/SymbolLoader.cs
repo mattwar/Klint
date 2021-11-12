@@ -404,13 +404,13 @@ namespace Kushy
     /// </summary>
     public class FileSymbolLoader : SymbolLoader
     {
-        private readonly string path;
+        private readonly string _schemaDirectoryPath;
         private readonly string _defaultClusterName;
         private readonly string _defaultDomain;
 
-        public FileSymbolLoader(string path, string defaultClusterName, string defaultDomain = null)
+        public FileSymbolLoader(string schemaDirectoryPath, string defaultClusterName, string defaultDomain = null)
         {
-            this.path = path;
+            _schemaDirectoryPath = Environment.ExpandEnvironmentVariables(schemaDirectoryPath);
             _defaultClusterName = defaultClusterName;
             _defaultDomain = defaultDomain ?? KustoFacts.KustoWindowsNet;
         }
@@ -429,21 +429,22 @@ namespace Kushy
         /// </summary>
         public override async Task<DatabaseSymbol> LoadDatabaseAsync(string databaseName, string clusterName = null, bool throwOnError = false, CancellationToken cancellationToken = default)
         {
-            var fullClusterName = GetFullHostName(clusterName ?? _defaultClusterName, _defaultDomain);
-            var clusterPath = Path.Combine(path, fullClusterName);
-            var databasePath = Path.Combine(clusterPath, databaseName + ".json");
+            var databasePath = GetDatabaseCachePath(clusterName, databaseName);
 
-            try
+            if (databasePath != null)
             {
-                if (File.Exists(databasePath))
+                try
                 {
-                    var jsonText = await File.ReadAllTextAsync(databasePath).ConfigureAwait(false);
-                    var cachedDb = JsonConvert.DeserializeObject<DatabaseInfo>(jsonText);
-                    return CreateDatabaseSymbol(cachedDb);
+                    if (File.Exists(databasePath))
+                    {
+                        var jsonText = await File.ReadAllTextAsync(databasePath).ConfigureAwait(false);
+                        var cachedDb = JsonConvert.DeserializeObject<DatabaseInfo>(jsonText);
+                        return CreateDatabaseSymbol(cachedDb);
+                    }
                 }
-            }
-            catch (Exception) when (!throwOnError)
-            {
+                catch (Exception) when (!throwOnError)
+                {
+                }
             }
 
             return null;
@@ -461,31 +462,33 @@ namespace Kushy
         /// </summary>
         public async Task<bool> SaveDatabaseAsync(DatabaseSymbol database, string clusterName = null, bool throwOnError = false, CancellationToken cancellationToken = default)
         {
-            var fullClusterName = GetFullHostName(clusterName ?? _defaultClusterName, _defaultDomain);
-            var clusterPath = Path.Combine(path, fullClusterName);
-            var databasePath = Path.Combine(clusterPath, database.Name + ".json");
+            var clusterPath = GetClusterCachePath(clusterName);
+            var databasePath = GetDatabaseCachePath(clusterName, database.Name);
 
-            try
+            if (clusterPath != null && databasePath != null)
             {
-                var cachedDb = CreateDatabaseInfo(database);
-                var jsonText = JsonConvert.SerializeObject(cachedDb, s_serializationSettings);
-
-                if (!Directory.Exists(path))
+                try
                 {
-                    Directory.CreateDirectory(path);
-                }
+                    var cachedDb = CreateDatabaseInfo(database);
+                    var jsonText = JsonConvert.SerializeObject(cachedDb, s_serializationSettings);
 
-                if (!Directory.Exists(clusterPath))
+                    if (!Directory.Exists(_schemaDirectoryPath))
+                    {
+                        Directory.CreateDirectory(_schemaDirectoryPath);
+                    }
+
+                    if (!Directory.Exists(clusterPath))
+                    {
+                        Directory.CreateDirectory(clusterPath);
+                    }
+
+                    await File.WriteAllTextAsync(databasePath, jsonText, cancellationToken).ConfigureAwait(false);
+
+                    return true;
+                }
+                catch (Exception) when (!throwOnError)
                 {
-                    Directory.CreateDirectory(clusterPath);
                 }
-
-                await File.WriteAllTextAsync(databasePath, jsonText, cancellationToken).ConfigureAwait(false);
-
-                return true;
-            }
-            catch (Exception) when (!throwOnError)
-            {
             }
 
             return false;
@@ -511,6 +514,73 @@ namespace Kushy
             {
                 await SaveClusterAsync(cluster, cancellationToken).ConfigureAwait(false);
             }
+        }
+
+        /// <summary>
+        /// Deletes all cached schemas for all clusters/databases
+        /// </summary>
+        public bool DeleteCache()
+        {
+            if (Directory.Exists(_schemaDirectoryPath))
+            {
+                try
+                {
+                    Directory.Delete(_schemaDirectoryPath, true);
+                    return true;
+                }
+                catch (Exception)
+                {
+                }
+
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Deletes all cached schemas for all databases in the cluster.
+        /// </summary>
+        public bool DeleteClusterCache(string clusterName = null)
+        {
+            var clusterPath = GetClusterCachePath(clusterName);
+            if (clusterPath != null)
+            {
+                if (Directory.Exists(clusterPath))
+                {
+                    try
+                    {
+                        Directory.Delete(clusterPath, true);
+                        return true;
+                    }
+                    catch (Exception)
+                    {
+                    }
+
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private string GetClusterCachePath(string clusterName)
+        {
+            clusterName = clusterName ?? _defaultClusterName;
+            if (clusterName == null)
+                return null;
+
+            var fullClusterName = GetFullHostName(clusterName, _defaultDomain);
+            return Path.Combine(_schemaDirectoryPath, clusterName);
+        }
+
+        private string GetDatabaseCachePath(string clusterName, string databaseName)
+        {
+            clusterName = clusterName ?? _defaultClusterName;
+            if (clusterName == null)
+                return null;
+
+            return Path.Combine(GetClusterCachePath(clusterName), databaseName + ".json");
         }
 
         private static DatabaseSymbol CreateDatabaseSymbol(DatabaseInfo db)

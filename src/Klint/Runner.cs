@@ -6,7 +6,7 @@ namespace Klint;
 
 public class Runner
 {
-    public static readonly string DefaultCachePath = "klint_schema_cache";
+    public static readonly string DefaultCachePath = "%appdata%/klint/schemas";
 
     private readonly TextWriter _output;
 
@@ -25,7 +25,6 @@ public class Runner
             {
                 LogMessage(error);
             }
-
             return;
         }
         else if (options.HelpRequested == true)
@@ -39,6 +38,8 @@ public class Runner
         string? defaultDatabaseName = null;
         SymbolLoader? loader = null;
         CachedServerSymbolLoader? cachedLoader = null;
+        FileSymbolLoader? fileLoader = null;
+        var actionTaken = false;
 
         string cachePath = DefaultCachePath;
         if (!string.IsNullOrEmpty(options.CachePath))
@@ -60,6 +61,7 @@ public class Runner
                 cachedLoader = new CachedServerSymbolLoader(options.ServerConnection, cachePath);
                 defaultClusterName = cachedLoader.ServerLoader.DefaultCluster;
                 defaultDatabaseName = cachedLoader.ServerLoader.DefaultDatabase;
+                fileLoader = cachedLoader.FileLoader;
                 loader = cachedLoader;
             }
         }
@@ -69,12 +71,10 @@ public class Runner
             defaultClusterName = options.DefaultCluster;
         }
 
-        if (loader == null
-            && options.NoCache != true
-            && !string.IsNullOrEmpty(defaultClusterName))
+        if (loader == null && options.NoCache != true)
         {
             // load symbols just from local cache
-            loader = new FileSymbolLoader(cachePath, defaultClusterName);
+            loader = fileLoader = new FileSymbolLoader(cachePath, defaultClusterName);
         }
 
         if (!string.IsNullOrEmpty(options.DefaultDatabase))
@@ -82,34 +82,37 @@ public class Runner
             defaultDatabaseName = options.DefaultDatabase;
         }
 
+        // always perform delete before generate if both are specified
+        if (options.DeleteCache == true && fileLoader != null)
+        {
+            fileLoader.DeleteCache();
+            LogMessage($"schema cache deleted");
+            actionTaken = true;
+        }
+
         if (options.GenerateCache == true && cachedLoader != null)
         {
             await GenerateCacheAsync(cachedLoader, CancellationToken.None).ConfigureAwait(false);
-            LogMessage($"schema cache generated at: {cachePath}");
-            return;
+            LogMessage($"schema cache generated");
+            actionTaken = true;
         }
 
-        // pre-load default database schema
-        if (defaultDatabaseName != null && loader != null)
+        // pre-load default database schema if analysis is to occur
+        if (defaultDatabaseName != null 
+            && loader != null
+            && (pipedInput != null || options.FilePaths.Count > 0))
         {
             globals = await loader.AddOrUpdateDefaultDatabaseAsync(globals, defaultDatabaseName, defaultClusterName);
         }
 
-        if (pipedInput == null && options.FilePaths.Count == 0)
-        {
-            LogMessage("no input");
-            DisplayHelp();
-            return;
-        }
-
         // now do the actual analysis ...
-
         var resolver = new SymbolResolver(loader);
         var analyzer = new Analyzer(globals, resolver);
 
         if (pipedInput != null)
         {
             await AnalyzeAsync(pipedInput, "input", analyzer);
+            actionTaken = true;
         }
 
         if (options.FilePaths.Count > 0)
@@ -119,8 +122,16 @@ public class Runner
                 var fileText = await File.ReadAllTextAsync(filePath);
                 await AnalyzeAsync(fileText, filePath, analyzer);
             }
+            actionTaken = true;
         }
-        
+
+        if (actionTaken == false && pipedInput == null && options.FilePaths.Count == 0)
+        {
+            LogMessage("no input");
+            _output.WriteLine();
+            DisplayHelp();
+        }
+
         async Task AnalyzeAsync(string text, string source, Analyzer analyzer)
         {
             var analysis = await analyzer.AnalyzeAsync(text, CancellationToken.None);
@@ -227,4 +238,6 @@ public class Runner
             }
         }
     }
+
+
 }

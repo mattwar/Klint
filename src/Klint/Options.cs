@@ -11,6 +11,7 @@ public static class OptionsParser
         string? cachePath = null;
         bool? noCache = null;
         bool? generateCache = null;
+        bool? deleteCache = null;
 
         List<string> filePaths = new List<string>();
         List<string> errors = new List<string>();
@@ -48,6 +49,10 @@ public static class OptionsParser
             {
                 generateCache = true;
             }
+            else if (arg == "-delete")
+            {
+                deleteCache = true;
+            }
             else if (arg == "-?" || arg == "-help")
             {
                 help = true;
@@ -72,6 +77,7 @@ public static class OptionsParser
             CachePath = cachePath,
             NoCache = noCache,
             GenerateCache = generateCache,
+            DeleteCache = deleteCache,
             HelpRequested = help,
         };
     }
@@ -85,6 +91,7 @@ options:
   -cache <path>         overrides the default path to the local schema cache directory
   -nocache              disables use of the local schema cache
   -generate             generates cached schemas for all databases (does not do analysis)
+  -delete               delete cached schemas (does not do analsys)
   -cluster <name>       the current cluster in scope (if no connection specified)
   -database <name>      the current database in scope (if not specified by connection)
 
@@ -116,5 +123,6 @@ public record Options
     public string? CachePath { get; init; }
     public bool? NoCache { get; init; }
     public bool? GenerateCache { get; init; }
+    public bool? DeleteCache { get; init; }
     public bool? HelpRequested { get; init; }
 }
