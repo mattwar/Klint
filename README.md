@@ -16,7 +16,7 @@
 
 #### Run analysis on MyQueries.kql using database schemas found in local cache or server
 
-    klint -connection ""https://help.kusto.windows.net;Fed=true"" -database Samples MyQueries.kql
+    klint -connection "https://help.kusto.windows.net;Fed=true" -database Samples MyQueries.kql
 
 #### Run analysis on MyQueries.kql using database schemas found in local cache only
 
@@ -24,7 +24,7 @@
 
 #### Run analysis on MyQueries.kql using fresh database schemas from the server only
 
-    klint -connection ""https://help.kusto.windows.net;Fed=true"" -database Samples -nocache MyQueries.kql
+    klint -connection "https://help.kusto.windows.net;Fed=true" -database Samples -nocache MyQueries.kql
 
 #### Run analysis on MyQueries.kql using no schemas at all (probably not a good idea)
 
@@ -32,4 +32,4 @@
 
 #### Pre-generate local schema cache (does not run analysis)
 
-    klint -connection ""https://help.kusto.windows.net;Fed=true"" -generate
+    klint -connection "https://help.kusto.windows.net;Fed=true" -generate
