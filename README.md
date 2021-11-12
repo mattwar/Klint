@@ -20,7 +20,7 @@
 
 #### Run analysis on MyQueries.kql using database schemas found in local cache only
 
-    klint -cluser help.kusto.windows.net -database Samples MyQueries.kql
+    klint -cluster help.kusto.windows.net -database Samples MyQueries.kql
 
 #### Run analysis on MyQueries.kql using fresh database schemas from the server only
 
