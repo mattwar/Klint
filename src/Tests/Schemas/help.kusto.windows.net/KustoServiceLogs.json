@@ -1,0 +1,9 @@
+{
+  "Name": "KustoServiceLogs",
+  "Tables": [
+    {
+      "Name": "KustoTelemetry",
+      "Schema": "(Source: string, Timestamp: datetime, Directory: string, Level: string, Machine: string, InstanceID: string, ProcessID: int, ThreadID: int, ActivityID: string, RootActivityId: string, ActivityType: string, ClientActivityId: string, SourceId: string, EventText: string)"
+    }
+  ]
+}

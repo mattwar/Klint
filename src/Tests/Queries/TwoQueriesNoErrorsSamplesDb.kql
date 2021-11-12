@@ -1,0 +1,5 @@
+﻿StormEvents 
+| limit 10
+
+Covid19
+| where Country has "Canada"

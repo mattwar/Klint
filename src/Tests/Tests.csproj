@@ -21,8 +21,20 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Update="Queries\UnknownTable.kql">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="Queries\TwoQueriesNoErrorsSamplesDb.kql">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Update="Queries\OneQueryNoErrorsSamplesDb.kql">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="Schemas\help.kusto.windows.net\KustoServiceLogs.json">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="Schemas\help.kusto.windows.net\Samples.json">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
   </ItemGroup>
 

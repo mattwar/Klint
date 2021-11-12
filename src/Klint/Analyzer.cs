@@ -6,22 +6,22 @@ namespace Klint;
 
 public class Analyzer
 {
-    private readonly SymbolLoader? _loader;
+    private readonly SymbolResolver? _resolver;
     private GlobalState _globals;
 
-    public Analyzer(GlobalState? globals = null, SymbolLoader? loader = null)
+    public Analyzer(GlobalState? globals = null, SymbolResolver? resolver = null)
     {
         _globals = globals ?? GlobalState.Default;
-        _loader = loader;
+        _resolver = resolver;
     }
 
     public async Task<AnalysisResult> AnalyzeAsync(string text, CancellationToken ct)
     {
         var script = CodeScript.From(text, _globals);
 
-        if (_loader != null)
+        if (_resolver != null)
         {
-            script = await _loader.AddReferencedDatabasesAsync(script, cancellationToken: ct);
+            script = await _resolver.AddReferencedDatabasesAsync(script, cancellationToken: ct);
             _globals = script.Globals;
         }
 

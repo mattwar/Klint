@@ -11,6 +11,8 @@ using Kusto.Language;
 using Kusto.Language.Editor;
 using Kusto.Language.Syntax;
 using Kusto.Language.Symbols;
+using Newtonsoft.Json;
+using static Kushy.Helpers;
 
 #nullable disable
 
@@ -19,12 +21,79 @@ namespace Kushy
     /// <summary>
     /// A class that retrieves schema information from a cluster as <see cref="Symbol"/> instances.
     /// </summary>
-    public class SymbolLoader
+    public abstract class SymbolLoader
+    {
+        public abstract string DefaultCluster { get; }
+        public abstract string DefaultDomain { get; }
+
+        /// <summary>
+        /// Gets a list of all the database names in the cluster associated with the connection.
+        /// </summary>
+        public abstract Task<string[]> GetDatabaseNamesAsync(string clusterName = null, bool throwOnError = false, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Loads the schema for the specified database into a <see cref="DatabaseSymbol"/>.
+        /// </summary>
+        public abstract Task<DatabaseSymbol> LoadDatabaseAsync(string databaseName, string clusterName = null, bool throwOnError = false, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Loads the schema for the specified database and returns a new <see cref="GlobalState"/> with the database added or updated.
+        /// </summary>
+        public Task<GlobalState> AddOrUpdateDatabaseAsync(GlobalState globals, string databaseName, string clusterName = null, bool throwOnError = false, CancellationToken cancellation = default)
+        {
+            return AddOrUpdateDatabaseAsync(globals, databaseName, clusterName, asDefault: false, throwOnError, cancellation);
+        }
+
+        /// <summary>
+        /// Loads the schema for the specified default database and returns a new <see cref="GlobalState"/> with the database added or updated.
+        /// </summary>
+        public Task<GlobalState> AddOrUpdateDefaultDatabaseAsync(GlobalState globals, string databaseName, string clusterName = null, bool throwOnError = false, CancellationToken cancellation = default)
+        {
+            return AddOrUpdateDatabaseAsync(globals, databaseName, clusterName, asDefault: true, throwOnError, cancellation);
+        }
+
+        /// <summary>
+        /// Loads the schema for the specified database and returns a new <see cref="GlobalState"/> with the database added or updated.
+        /// </summary>
+        private async Task<GlobalState> AddOrUpdateDatabaseAsync(GlobalState globals, string databaseName, string clusterName, bool asDefault, bool throwOnError, CancellationToken cancellation)
+        {
+            clusterName = string.IsNullOrEmpty(clusterName)
+                ? this.DefaultCluster
+                : GetFullHostName(clusterName, this.DefaultDomain);
+
+            var db = await LoadDatabaseAsync(databaseName, clusterName, throwOnError, cancellation).ConfigureAwait(false);
+            if (db == null)
+                return globals;
+
+            var cluster = globals.GetCluster(clusterName);
+            if (cluster == null)
+            {
+                cluster = new ClusterSymbol(clusterName, new[] { db });
+                globals = globals.AddOrReplaceCluster(cluster);
+            }
+            else
+            {
+                cluster = cluster.AddOrUpdateDatabase(db);
+                globals = globals.AddOrReplaceCluster(cluster);
+            }
+
+            if (asDefault)
+            {
+                globals = globals.WithCluster(cluster).WithDatabase(db);
+            }
+
+            return globals;
+        }
+    }
+
+    /// <summary>
+    /// A class that retrieves schema symbols from a cluster server.
+    /// </summary>
+    public class ServerSymbolLoader : SymbolLoader
     {
         private readonly KustoConnectionStringBuilder _defaultConnection;
         private readonly string _defaultClusterName;
         private readonly string _defaultDomain;
-        private readonly HashSet<string> _ignoreClusterNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, HashSet<string>> _badDatabaseNameMap = new Dictionary<string, HashSet<string>>();
 
         /// <summary>
@@ -34,7 +103,7 @@ namespace Kushy
         /// <param name="defaultDomain">The domain used to convert short cluster host names into full cluster host names.
         /// This string must start with a dot.  If not specified, the default domain is ".Kusto.Windows.Net"
         /// </param>
-        public SymbolLoader(string clusterConnection, string defaultDomain = null)
+        public ServerSymbolLoader(string clusterConnection, string defaultDomain = null)
             : this(new KustoConnectionStringBuilder(clusterConnection), defaultDomain)
         {
         }
@@ -46,7 +115,7 @@ namespace Kushy
         /// <param name="defaultDomain">The domain used to convert short cluster host names into full cluster host names.
         /// This string must start with a dot.  If not specified, the default domain is ".Kusto.Windows.Net"
         /// </param>
-        public SymbolLoader(KustoConnectionStringBuilder clusterConnection, string defaultDomain = null)
+        public ServerSymbolLoader(KustoConnectionStringBuilder clusterConnection, string defaultDomain = null)
         {
             _defaultConnection = clusterConnection;
             _defaultClusterName = GetHost(clusterConnection);
@@ -55,14 +124,22 @@ namespace Kushy
                 : defaultDomain;
         }
 
+        public override string DefaultCluster => _defaultClusterName;
+        public override string DefaultDomain => _defaultDomain;
+
+        /// <summary>
+        /// The default database specified in the connection
+        /// </summary>
+        public string DefaultDatabase => _defaultConnection.InitialCatalog;
+
         /// <summary>
         /// Gets a list of all the database names in the cluster associated with the connection.
         /// </summary>
-        public async Task<string[]> GetDatabaseNamesAsync(string clusterName = null, bool throwOnError = false, CancellationToken cancellationToken = default)
+        public override async Task<string[]> GetDatabaseNamesAsync(string clusterName = null, bool throwOnError = false, CancellationToken cancellationToken = default)
         {
             clusterName = string.IsNullOrEmpty(clusterName)
                 ? _defaultClusterName
-                : GetFullHostName(clusterName);
+                : GetFullHostName(clusterName, _defaultDomain);
 
             var connection = GetClusterConnection(clusterName);
             var databases = await ExecuteControlCommandAsync<ShowDatabasesResult>(connection, "", ".show databases", throwOnError, cancellationToken);
@@ -75,11 +152,11 @@ namespace Kushy
         /// <summary>
         /// Loads the schema for the specified database into a <see cref="DatabaseSymbol"/>.
         /// </summary>
-        public async Task<DatabaseSymbol> LoadDatabaseAsync(string databaseName, string clusterName = null, bool throwOnError = false, CancellationToken cancellationToken = default)
+        public override async Task<DatabaseSymbol> LoadDatabaseAsync(string databaseName, string clusterName = null, bool throwOnError = false, CancellationToken cancellationToken = default)
         {
             clusterName = string.IsNullOrEmpty(clusterName)
                 ? _defaultClusterName
-                : GetFullHostName(clusterName);
+                : GetFullHostName(clusterName, _defaultDomain);
 
             // if we've already determined this database name is bad, then bail out
             if (_badDatabaseNameMap.TryGetValue(clusterName, out var badDbNames)
@@ -190,260 +267,12 @@ namespace Kushy
 
             foreach (var fun in functionSchemas)
             {
-                var parameters = TranslateParameters(fun.Parameters);
-                var functionSymbol = new FunctionSymbol(fun.Name, fun.Body, parameters);
+                //var parameters = TranslateParameters(fun.Parameters);
+                var functionSymbol = new FunctionSymbol(fun.Name, fun.Parameters, fun.Body, fun.DocString);
                 functions.Add(functionSymbol);
             }
 
             return functions;
-        }
-
-        /// <summary>
-        /// Loads the schema for the specified database and returns a new <see cref="GlobalState"/> with the database added or updated.
-        /// </summary>
-        public Task<GlobalState> AddOrUpdateDatabaseAsync(GlobalState globals, string databaseName, string clusterName = null, bool throwOnError = false, CancellationToken cancellation = default)
-        {
-            return AddOrUpdateDatabaseAsync(globals, databaseName, clusterName, asDefault: false, throwOnError, cancellation);
-        }
-
-        /// <summary>
-        /// Loads the schema for the specified default database and returns a new <see cref="GlobalState"/> with the database added or updated.
-        /// </summary>
-        public Task<GlobalState> AddOrUpdateDefaultDatabaseAsync(GlobalState globals, string databaseName, string clusterName = null, bool throwOnError = false, CancellationToken cancellation = default)
-        {
-            return AddOrUpdateDatabaseAsync(globals, databaseName, clusterName, asDefault: true, throwOnError, cancellation);
-        }
-
-        /// <summary>
-        /// Loads the schema for the specified database and returns a new <see cref="GlobalState"/> with the database added or updated.
-        /// </summary>
-        private async Task<GlobalState> AddOrUpdateDatabaseAsync(GlobalState globals, string databaseName, string clusterName, bool asDefault, bool throwOnError, CancellationToken cancellation)
-        {
-            clusterName = string.IsNullOrEmpty(clusterName)
-                ? _defaultClusterName
-                : GetFullHostName(clusterName);
-
-            var db = await LoadDatabaseAsync(databaseName, clusterName, throwOnError, cancellation).ConfigureAwait(false);
-            if (db == null)
-                return globals;
-
-            var cluster = globals.GetCluster(clusterName);
-            if (cluster == null)
-            {
-                cluster = new ClusterSymbol(clusterName, new[] { db });
-                globals = globals.AddOrReplaceCluster(cluster);
-            }
-            else
-            {
-                cluster = cluster.AddOrUpdateDatabase(db);
-                globals = globals.AddOrReplaceCluster(cluster);
-            }
-
-            if (asDefault)
-            {
-                globals = globals.WithCluster(cluster).WithDatabase(db);
-            }
-
-            return globals;
-        }
-
-        /// <summary>
-        /// Loads and adds the <see cref="DatabaseSymbol"/> for any database explicity referenced in the query but not already present in the <see cref="GlobalState"/>.
-        /// </summary>
-        public async Task<KustoCode> AddReferencedDatabasesAsync(KustoCode code, bool throwOnError = false, CancellationToken cancellationToken = default)
-        {
-            var service = new KustoCodeService(code);
-            var globals = await AddReferencedDatabasesAsync(code.Globals, service, throwOnError, cancellationToken).ConfigureAwait(false);
-            return code.WithGlobals(globals);
-        }
-
-        /// <summary>
-        /// Loads and adds the <see cref="DatabaseSymbol"/> for any database explicity referenced in the <see cref="CodeScript"/ document but not already present in the <see cref="GlobalState"/>.
-        /// </summary>
-        public async Task<CodeScript> AddReferencedDatabasesAsync(CodeScript script, bool throwOnError = false, CancellationToken cancellationToken = default)
-        {
-            var globals = script.Globals;
-
-            foreach (var block in script.Blocks)
-            {
-                globals = await AddReferencedDatabasesAsync(globals, block.Service, throwOnError, cancellationToken).ConfigureAwait(false);
-            }
-
-            return script.WithGlobals(globals);
-        }
-
-        /// <summary>
-        /// Loads and adds the <see cref="DatabaseSymbol"/> for any database explicity referenced in the query but not already present in the <see cref="GlobalState"/>.
-        /// </summary>
-        private async Task<GlobalState> AddReferencedDatabasesAsync(GlobalState globals, CodeService service, bool throwOnError = false,CancellationToken cancellationToken = default)
-        {
-            // find all explicit cluster (xxx) references
-            var clusterRefs = service.GetClusterReferences(cancellationToken);
-            foreach (ClusterReference clusterRef in clusterRefs)
-            {
-                var clusterName = GetFullHostName(clusterRef.Cluster);
-
-                // don't bother with cluster names that we've already shown to not exist
-                if (_ignoreClusterNames.Contains(clusterName))
-                    continue;
-
-                var cluster = globals.GetCluster(clusterName);
-                if (cluster == null || cluster.IsOpen)
-                {
-                    // check to see if this is an actual cluster and get all database names
-                    var databaseNames = await GetDatabaseNamesAsync(clusterName, throwOnError).ConfigureAwait(false);
-                    if (databaseNames != null)
-                    {
-                        // initially populate with empty 'open' databases. These will get updated to full schema if referenced
-                        var databases = databaseNames.Select(db => new DatabaseSymbol(db, null, isOpen: true)).ToArray();
-                        cluster = new ClusterSymbol(clusterName, databases);
-                        globals = globals.WithClusterList(globals.Clusters.Concat(new[] { cluster }).ToArray());
-                    }
-                }
-
-                // we already have all the known schema for this cluster
-                _ignoreClusterNames.Add(clusterName);
-            }
-
-            // examine all explicit database(xxx) references
-            var dbRefs = service.GetDatabaseReferences(cancellationToken);
-            foreach (DatabaseReference dbRef in dbRefs)
-            {
-                var clusterName = string.IsNullOrEmpty(dbRef.Cluster)
-                    ? null
-                    : GetFullHostName(dbRef.Cluster);
-
-                // get implicit or explicit named cluster
-                var cluster = string.IsNullOrEmpty(clusterName) 
-                    ? globals.Cluster 
-                    : globals.GetCluster(clusterName);
-
-                if (cluster != null)
-                {
-                    // look for existing database of this name
-                    var db = cluster.Databases.FirstOrDefault(m => m.Name.Equals(dbRef.Database, StringComparison.OrdinalIgnoreCase));
-
-                    // is this one of those not-yet-populated databases?
-                    if (db == null || (db != null && db.Members.Count == 0 && db.IsOpen))
-                    {
-                        var newGlobals = await AddOrUpdateDatabaseAsync(globals, dbRef.Database, clusterName, asDefault: false, throwOnError, cancellationToken).ConfigureAwait(false);
-                        globals = newGlobals != null ? newGlobals : globals;
-                    }
-                }
-            }
-
-            return globals;
-        }
-
-        /// <summary>
-        /// Convert CLR type name into a Kusto scalar type.
-        /// </summary>
-        private static ScalarSymbol GetKustoType(string clrTypeName)
-        {
-            switch (clrTypeName)
-            {
-                case "System.Byte":
-                case "Byte":
-                case "byte":
-                case "System.SByte":
-                case "SByte":
-                case "sbyte":
-                case "System.Int16":
-                case "Int16":
-                case "short":
-                case "System.UInt16":
-                case "UInt16":
-                case "ushort":
-                case "System.Int32":
-                case "Int32":
-                case "int":
-                    return ScalarTypes.Int;
-                case "System.UInt32": // unsigned ints don't fit into int, use long
-                case "UInt32":
-                case "uint":
-                case "System.Int64":
-                case "Int64":
-                case "long":
-                    return ScalarTypes.Long;
-                case "System.Double":
-                case "Double":
-                case "double":
-                case "float":
-                case "System.single":
-                case "System.Single":
-                    return ScalarTypes.Real;
-                case "System.UInt64": // unsigned longs do not fit into long, use decimal
-                case "UInt64":
-                case "ulong":
-                case "System.Decimal":
-                case "Decimal":
-                case "decimal":
-                case "System.Data.SqlTypes.SqlDecimal":
-                case "SqlDecimal":
-                    return ScalarTypes.Decimal;
-                case "System.Guid":
-                case "Guid":
-                    return ScalarTypes.Guid;
-                case "System.DateTime":
-                case "DateTime":
-                    return ScalarTypes.DateTime;
-                case "System.TimeSpan":
-                case "TimeSpan":
-                    return ScalarTypes.TimeSpan;
-                case "System.String":
-                case "String":
-                case "string":
-                    return ScalarTypes.String;
-                case "System.Boolean":
-                case "Boolean":
-                case "bool":
-                    return ScalarTypes.Bool;
-                case "System.Object":
-                case "Object":
-                case "object":
-                    return ScalarTypes.Dynamic;
-                case "System.Type":
-                case "Type":
-                    return ScalarTypes.Type;
-                default:
-                    throw new InvalidOperationException($"Unhandled clr type: {clrTypeName}");
-            }
-        }
-
-        private static IReadOnlyList<Parameter> NoParameters = new Parameter[0];
-
-        /// <summary>
-        /// Translate Kusto parameter list declaration into into list of <see cref="Parameter"/> instances.
-        /// </summary>
-        private static IReadOnlyList<Parameter> TranslateParameters(string parameters)
-        {
-            parameters = parameters.Trim();
-
-            if (string.IsNullOrEmpty(parameters) || parameters == "()")
-                return NoParameters;
-
-            if (parameters[0] != '(')
-                parameters = "(" + parameters;
-            if (parameters[parameters.Length - 1] != ')')
-                parameters = parameters + ")";
-
-            var query = "let fn = " + parameters + " { };";
-            var code = KustoCode.ParseAndAnalyze(query);
-            var let = code.Syntax.GetFirstDescendant<LetStatement>();
-
-            if (let.Name.ReferencedSymbol is FunctionSymbol fs)
-            {
-                return fs.Signatures[0].Parameters;
-            }
-            else if (let.Name.ReferencedSymbol is VariableSymbol vs
-                && vs.Type is FunctionSymbol vfs)
-            {
-                return vfs.Signatures[0].Parameters;
-            }
-            else
-            {
-                return NoParameters;
-            }
         }
 
         /// <summary>
@@ -466,11 +295,6 @@ namespace Kushy
             {
                 return null;
             }
-        }
-
-        private string GetFullHostName(string clusterNameOrUri)
-        {
-            return KustoFacts.GetFullHostName(KustoFacts.GetHostName(clusterNameOrUri), _defaultDomain);
         }
 
         private string GetClusterHost(string clusterName)
@@ -572,6 +396,542 @@ namespace Kushy
             public string Body;
             public string Folder;
             public string DocString;
+        }
+    }
+
+    /// <summary>
+    /// A class that loads symbol schema from text files
+    /// </summary>
+    public class FileSymbolLoader : SymbolLoader
+    {
+        private readonly string path;
+        private readonly string _defaultClusterName;
+        private readonly string _defaultDomain;
+
+        public FileSymbolLoader(string path, string defaultClusterName, string defaultDomain = null)
+        {
+            this.path = path;
+            _defaultClusterName = defaultClusterName;
+            _defaultDomain = defaultDomain ?? KustoFacts.KustoWindowsNet;
+        }
+
+        public override string DefaultCluster => _defaultClusterName;
+        public override string DefaultDomain => _defaultDomain;
+
+        public override Task<string[]> GetDatabaseNamesAsync(string clusterName = null, bool throwOnError = false, CancellationToken cancellationToken = default)
+        {
+            // TODO: load database names from cluster json file
+            return null;
+        }
+
+        /// <summary>
+        /// Loads the named database schema from the cache.
+        /// </summary>
+        public override async Task<DatabaseSymbol> LoadDatabaseAsync(string databaseName, string clusterName = null, bool throwOnError = false, CancellationToken cancellationToken = default)
+        {
+            var fullClusterName = GetFullHostName(clusterName ?? _defaultClusterName, _defaultDomain);
+            var clusterPath = Path.Combine(path, fullClusterName);
+            var databasePath = Path.Combine(clusterPath, databaseName + ".json");
+
+            try
+            {
+                if (File.Exists(databasePath))
+                {
+                    var jsonText = await File.ReadAllTextAsync(databasePath).ConfigureAwait(false);
+                    var cachedDb = JsonConvert.DeserializeObject<DatabaseInfo>(jsonText);
+                    return CreateDatabaseSymbol(cachedDb);
+                }
+            }
+            catch (Exception) when (!throwOnError)
+            {
+            }
+
+            return null;
+        }
+
+        private static readonly JsonSerializerSettings s_serializationSettings =
+            new JsonSerializerSettings()
+            {
+                DefaultValueHandling = DefaultValueHandling.Ignore,
+                Formatting = Formatting.Indented,
+            };
+
+        /// <summary>
+        /// Saves the database schema to the cache.
+        /// </summary>
+        public async Task<bool> SaveDatabaseAsync(DatabaseSymbol database, string clusterName = null, bool throwOnError = false, CancellationToken cancellationToken = default)
+        {
+            var fullClusterName = GetFullHostName(clusterName ?? _defaultClusterName, _defaultDomain);
+            var clusterPath = Path.Combine(path, fullClusterName);
+            var databasePath = Path.Combine(clusterPath, database.Name + ".json");
+
+            try
+            {
+                var cachedDb = CreateDatabaseInfo(database);
+                var jsonText = JsonConvert.SerializeObject(cachedDb, s_serializationSettings);
+
+                if (!Directory.Exists(path))
+                {
+                    Directory.CreateDirectory(path);
+                }
+
+                if (!Directory.Exists(clusterPath))
+                {
+                    Directory.CreateDirectory(clusterPath);
+                }
+
+                await File.WriteAllTextAsync(databasePath, jsonText, cancellationToken).ConfigureAwait(false);
+
+                return true;
+            }
+            catch (Exception) when (!throwOnError)
+            {
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Saves all the cluster schema to the cache.
+        /// </summary>
+        public async Task SaveClusterAsync(ClusterSymbol cluster, CancellationToken cancellationToken = default)
+        {
+            foreach (var db in cluster.Databases)
+            {
+                var _ = await SaveDatabaseAsync(db, cluster.Name, throwOnError: false, cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        /// <summary>
+        /// Saves all the schema for all the clusters to the cache.
+        /// </summary>
+        public async Task SaveClusters(IEnumerable<ClusterSymbol> clusters, CancellationToken cancellationToken = default)
+        {
+            foreach (var cluster in clusters)
+            {
+                await SaveClusterAsync(cluster, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private static DatabaseSymbol CreateDatabaseSymbol(DatabaseInfo db)
+        {
+            var members = new List<Symbol>();
+
+            if (db.Tables != null)
+                members.AddRange(db.Tables.Select(t => CreateTableSymbol(t)));
+            if (db.ExternalTables != null)
+                members.AddRange(db.ExternalTables.Select(e => CreateExternalTableSymbol(e)));
+            if (db.MaterializedViews != null)
+                members.AddRange(db.MaterializedViews.Select(v => CreateMaterializedViewSymbol(v)));
+            if (db.Functions != null)
+                members.AddRange(db.Functions.Select(f => CreateFunctionSymbol(f)));
+
+            return new DatabaseSymbol(db.Name, members);
+        }
+
+        private static TableSymbol CreateTableSymbol(TableInfo tab)
+        {
+            return new TableSymbol(tab.Name, tab.Schema, tab.Description);
+        }
+
+        private static TableSymbol CreateExternalTableSymbol(ExternalTableInfo xtab)
+        {
+            return new TableSymbol(xtab.Name, xtab.Schema, xtab.Description).WithIsExternal(true);
+        }
+
+        private static TableSymbol CreateMaterializedViewSymbol(MaterializedViewInfo mview)
+        {
+            return new TableSymbol(mview.Name, mview.Schema, mview.Description).WithIsMaterializedView(true);
+        }
+
+        public static FunctionSymbol CreateFunctionSymbol(FunctionInfo fun)
+        {
+            return new FunctionSymbol(fun.Name, fun.Parameters, fun.Body, fun.Description);
+        }
+
+        private static DatabaseInfo CreateDatabaseInfo(DatabaseSymbol db)
+        {
+            return new DatabaseInfo
+            {
+                Name = db.Name,
+                Tables = db.Tables.Count > 0 ? db.Tables.Select(t => CreateTableInfo(t)).ToList() : null,
+                ExternalTables = db.ExternalTables.Count > 0 ? db.ExternalTables.Select(e => CreateExternalTableInfo(e)).ToList() : null,
+                MaterializedViews = db.MaterializedViews.Count > 0 ? db.MaterializedViews.Select(m => CreateMaterializedViewInfo(m)).ToList() : null,
+                Functions = db.Functions.Count > 0 ? db.Functions.Select(f => CreateFunctionInfo(f)).ToList() : null
+            };
+        }
+
+        private static TableInfo CreateTableInfo(TableSymbol tab)
+        {
+            return new TableInfo
+            {
+                Name = tab.Name,
+                Schema = GetSchema(tab),
+                Description = string.IsNullOrEmpty(tab.Description) ? null : tab.Description
+            };
+        }
+
+        private static ExternalTableInfo CreateExternalTableInfo(TableSymbol tab)
+        {
+            return new ExternalTableInfo
+            {
+                Name = tab.Name,
+                Schema = GetSchema(tab),
+                Description = string.IsNullOrEmpty(tab.Description) ? null : tab.Description
+            };
+        }
+
+        private static MaterializedViewInfo CreateMaterializedViewInfo(TableSymbol tab)
+        {
+            return new MaterializedViewInfo
+            {
+                Name = tab.Name,
+                Schema = GetSchema(tab),
+                Description = string.IsNullOrEmpty(tab.Description) ? null : tab.Description
+            };
+        }
+
+        private static FunctionInfo CreateFunctionInfo(FunctionSymbol fun)
+        {
+            return new FunctionInfo
+            {
+                Name = fun.Name,
+                Parameters = GetParameterList(fun.Signatures[0]),
+                Body = fun.Signatures[0].Body,
+                Description = string.IsNullOrEmpty(fun.Description) ? null : fun.Description
+            };
+        }
+
+        public class DatabaseInfo
+        {
+            public string Name;
+            public List<TableInfo> Tables;
+            public List<ExternalTableInfo> ExternalTables;
+            public List<MaterializedViewInfo> MaterializedViews;
+            public List<FunctionInfo> Functions;
+        }
+
+        public class TableInfo
+        {
+            public string Name;
+            public string Schema;
+            public string Description;
+        }
+
+        public class ExternalTableInfo
+        {
+            public string Name;
+            public string Schema;
+            public string Description;
+        }
+
+        public class MaterializedViewInfo
+        {
+            public string Name;
+            public string Schema;
+            public string Description;
+        }
+
+        public class FunctionInfo
+        {
+            public string Name;
+            public string Parameters;
+            public string Body;
+            public string Description;
+        }
+    }
+
+    /// <summary>
+    /// A <see cref="SymbolLoader"/> that maintains a file cache of database schemas.
+    /// </summary>
+    public class CachedServerSymbolLoader : SymbolLoader
+    {
+        public FileSymbolLoader FileLoader { get; }
+        public ServerSymbolLoader ServerLoader { get; }
+
+        public CachedServerSymbolLoader(string connection, string cachePath, string defaultDomain = null)
+        {
+            this.ServerLoader = new ServerSymbolLoader(connection, defaultDomain);
+            this.FileLoader = new FileSymbolLoader(cachePath, this.ServerLoader.DefaultCluster, defaultDomain);
+        }
+
+        public CachedServerSymbolLoader(ServerSymbolLoader serverLoader, FileSymbolLoader fileLoader)
+        {
+            this.ServerLoader = serverLoader;
+            this.FileLoader = fileLoader;
+        }
+
+        public override string DefaultCluster => this.ServerLoader.DefaultCluster;
+        public override string DefaultDomain => this.ServerLoader.DefaultDomain;
+
+        public override async Task<string[]> GetDatabaseNamesAsync(string clusterName = null, bool throwOnError = false, CancellationToken cancellationToken = default)
+        {
+            var names = await this.FileLoader.GetDatabaseNamesAsync(clusterName, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            if (names == null)
+            {
+                names = await this.ServerLoader.GetDatabaseNamesAsync(clusterName, throwOnError, cancellationToken).ConfigureAwait(false);
+
+                if (names != null)
+                {
+                    // TODO: save database names to cluster json file
+                }
+            }
+
+            return names;
+        }
+
+        public override async Task<DatabaseSymbol> LoadDatabaseAsync(string databaseName, string clusterName = null, bool throwOnError = false, CancellationToken cancellationToken = default)
+        {
+            var db = await this.FileLoader.LoadDatabaseAsync(databaseName, clusterName, false, cancellationToken).ConfigureAwait(false);
+
+            if (db == null)
+            {
+                db = await this.ServerLoader.LoadDatabaseAsync(databaseName, clusterName, throwOnError, cancellationToken).ConfigureAwait(false);
+
+                if (db != null)
+                {
+                    await this.FileLoader.SaveDatabaseAsync(db, clusterName, throwOnError, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            return db;
+        }
+    }
+
+    /// <summary>
+    /// A class that resolves cluster/database references in kusto queries using a <see cref="SymbolLoader"/>
+    /// </summary>
+    public class SymbolResolver
+    {
+        private readonly SymbolLoader _loader;
+        private readonly HashSet<string> _ignoreClusterNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        public SymbolResolver(SymbolLoader loader)
+        {
+            _loader = loader;
+        }
+
+        /// <summary>
+        /// Loads and adds the <see cref="DatabaseSymbol"/> for any database explicity referenced in the query but not already present in the <see cref="GlobalState"/>.
+        /// </summary>
+        public async Task<KustoCode> AddReferencedDatabasesAsync(KustoCode code, bool throwOnError = false, CancellationToken cancellationToken = default)
+        {
+            var service = new KustoCodeService(code);
+            var globals = await AddReferencedDatabasesAsync(code.Globals, service, throwOnError, cancellationToken).ConfigureAwait(false);
+            return code.WithGlobals(globals);
+        }
+
+        /// <summary>
+        /// Loads and adds the <see cref="DatabaseSymbol"/> for any database explicity referenced in the <see cref="CodeScript"/ document but not already present in the <see cref="GlobalState"/>.
+        /// </summary>
+        public async Task<CodeScript> AddReferencedDatabasesAsync(CodeScript script, bool throwOnError = false, CancellationToken cancellationToken = default)
+        {
+            var globals = script.Globals;
+
+            foreach (var block in script.Blocks)
+            {
+                globals = await AddReferencedDatabasesAsync(globals, block.Service, throwOnError, cancellationToken).ConfigureAwait(false);
+            }
+
+            return script.WithGlobals(globals);
+        }
+
+        /// <summary>
+        /// Loads and adds the <see cref="DatabaseSymbol"/> for any database explicity referenced in the query but not already present in the <see cref="GlobalState"/>.
+        /// </summary>
+        private async Task<GlobalState> AddReferencedDatabasesAsync(GlobalState globals, CodeService service, bool throwOnError = false, CancellationToken cancellationToken = default)
+        {
+            // find all explicit cluster (xxx) references
+            var clusterRefs = service.GetClusterReferences(cancellationToken);
+            foreach (ClusterReference clusterRef in clusterRefs)
+            {
+                var clusterName = GetFullHostName(clusterRef.Cluster, _loader.DefaultDomain);
+
+                // don't bother with cluster names that we've already shown to not exist
+                if (_ignoreClusterNames.Contains(clusterName))
+                    continue;
+
+                var cluster = globals.GetCluster(clusterName);
+                if (cluster == null || cluster.IsOpen)
+                {
+                    // check to see if this is an actual cluster and get all database names
+                    var databaseNames = await _loader.GetDatabaseNamesAsync(clusterName, throwOnError).ConfigureAwait(false);
+                    if (databaseNames != null)
+                    {
+                        // initially populate with empty 'open' databases. These will get updated to full schema if referenced
+                        var databases = databaseNames.Select(db => new DatabaseSymbol(db, null, isOpen: true)).ToArray();
+                        cluster = new ClusterSymbol(clusterName, databases);
+                        globals = globals.WithClusterList(globals.Clusters.Concat(new[] { cluster }).ToArray());
+                    }
+                }
+
+                // we already have all the known schema for this cluster
+                _ignoreClusterNames.Add(clusterName);
+            }
+
+            // examine all explicit database(xxx) references
+            var dbRefs = service.GetDatabaseReferences(cancellationToken);
+            foreach (DatabaseReference dbRef in dbRefs)
+            {
+                var clusterName = string.IsNullOrEmpty(dbRef.Cluster)
+                    ? null
+                    : GetFullHostName(dbRef.Cluster, _loader.DefaultDomain);
+
+                // get implicit or explicit named cluster
+                var cluster = string.IsNullOrEmpty(clusterName)
+                    ? globals.Cluster
+                    : globals.GetCluster(clusterName);
+
+                if (cluster != null)
+                {
+                    // look for existing database of this name
+                    var db = cluster.Databases.FirstOrDefault(m => m.Name.Equals(dbRef.Database, StringComparison.OrdinalIgnoreCase));
+
+                    // is this one of those not-yet-populated databases?
+                    if (db == null || (db != null && db.Members.Count == 0 && db.IsOpen))
+                    {
+                        var newGlobals = await _loader.AddOrUpdateDatabaseAsync(globals, dbRef.Database, clusterName, throwOnError, cancellationToken).ConfigureAwait(false);
+                        globals = newGlobals != null ? newGlobals : globals;
+                    }
+                }
+            }
+
+            return globals;
+        }
+    }
+
+    internal static class Helpers
+    {
+        public static string GetFullHostName(string clusterNameOrUri, string defaultDomain)
+        {
+            return KustoFacts.GetFullHostName(KustoFacts.GetHostName(clusterNameOrUri), defaultDomain);
+        }
+
+        /// <summary>
+        /// Convert CLR type name into a Kusto scalar type.
+        /// </summary>
+        public static ScalarSymbol GetKustoType(string clrTypeName)
+        {
+            switch (clrTypeName)
+            {
+                case "System.Byte":
+                case "Byte":
+                case "byte":
+                case "System.SByte":
+                case "SByte":
+                case "sbyte":
+                case "System.Int16":
+                case "Int16":
+                case "short":
+                case "System.UInt16":
+                case "UInt16":
+                case "ushort":
+                case "System.Int32":
+                case "Int32":
+                case "int":
+                    return ScalarTypes.Int;
+                case "System.UInt32": // unsigned ints don't fit into int, use long
+                case "UInt32":
+                case "uint":
+                case "System.Int64":
+                case "Int64":
+                case "long":
+                    return ScalarTypes.Long;
+                case "System.Double":
+                case "Double":
+                case "double":
+                case "float":
+                case "System.single":
+                case "System.Single":
+                    return ScalarTypes.Real;
+                case "System.UInt64": // unsigned longs do not fit into long, use decimal
+                case "UInt64":
+                case "ulong":
+                case "System.Decimal":
+                case "Decimal":
+                case "decimal":
+                case "System.Data.SqlTypes.SqlDecimal":
+                case "SqlDecimal":
+                    return ScalarTypes.Decimal;
+                case "System.Guid":
+                case "Guid":
+                    return ScalarTypes.Guid;
+                case "System.DateTime":
+                case "DateTime":
+                    return ScalarTypes.DateTime;
+                case "System.TimeSpan":
+                case "TimeSpan":
+                    return ScalarTypes.TimeSpan;
+                case "System.String":
+                case "String":
+                case "string":
+                    return ScalarTypes.String;
+                case "System.Boolean":
+                case "Boolean":
+                case "bool":
+                    return ScalarTypes.Bool;
+                case "System.Object":
+                case "Object":
+                case "object":
+                    return ScalarTypes.Dynamic;
+                case "System.Type":
+                case "Type":
+                    return ScalarTypes.Type;
+                default:
+                    throw new InvalidOperationException($"Unhandled clr type: {clrTypeName}");
+            }
+        }
+
+        public static string GetSchema(TableSymbol table)
+        {
+            return "(" + string.Join(", ", table.Columns.Select(c => $"{c.Name}: {GetKustoType(c.Type)}")) + ")";
+        }
+
+        public static string GetKustoType(TypeSymbol type)
+        {
+            if (type is ScalarSymbol s)
+            {
+                return s.Name;
+            }
+            else if (type is TableSymbol t)
+            {
+                if (t.Columns.Count == 0)
+                {
+                    return "(*)";
+                }
+                else
+                {
+                    return GetSchema(t);
+                }
+            }
+            else
+            {
+                return "unknown";
+            }
+        }
+
+        public static string GetFunctionParameterType(Parameter p)
+        {
+            switch (p.TypeKind)
+            {
+                case ParameterTypeKind.Declared:
+                    return GetKustoType(p.DeclaredTypes[0]);
+                case ParameterTypeKind.Tabular:
+                    return "(*)";
+                default:
+                    return "unknown";
+            }
+        }
+
+        public static string GetParameterList(FunctionSymbol fun)
+        {
+            return GetParameterList(fun.Signatures[0]);
+        }
+
+        public static string GetParameterList(Signature sig)
+        {
+            return "(" + string.Join(", ", sig.Parameters.Select(p => $"{p.Name}: {GetFunctionParameterType(p)}")) + ")";
         }
     }
 }

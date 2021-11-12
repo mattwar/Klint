@@ -1,3 +1,3 @@
 ﻿using Klint;
 
-await Runner.RunAsync(args, Console.Out, Console.In);
+await Runner.RunAsync(args, Console.Out, Console.IsInputRedirected ? Console.In : null);
