@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Kusto.Cloud.Platform.Data;
@@ -564,23 +565,43 @@ namespace Kushy
             return true;
         }
 
-        private string GetClusterCachePath(string clusterName)
+        public string GetClusterCachePath(string clusterName)
         {
             clusterName = clusterName ?? _defaultClusterName;
             if (clusterName == null)
                 return null;
 
             var fullClusterName = GetFullHostName(clusterName, _defaultDomain);
-            return Path.Combine(_schemaDirectoryPath, clusterName);
+            return Path.Combine(_schemaDirectoryPath, MakeFilePathPart(fullClusterName));
         }
 
-        private string GetDatabaseCachePath(string clusterName, string databaseName)
+        public string GetDatabaseCachePath(string clusterName, string databaseName)
         {
             clusterName = clusterName ?? _defaultClusterName;
             if (clusterName == null)
                 return null;
 
-            return Path.Combine(GetClusterCachePath(clusterName), databaseName + ".json");
+            return Path.Combine(GetClusterCachePath(clusterName), MakeFilePathPart(databaseName) + ".json");
+        }
+
+        private static bool IsInvalidPathChar(char ch) =>
+            ch == '\\' || ch == '/';
+
+        private static string MakeFilePathPart(string name)
+        {
+            if (name.Any(IsInvalidPathChar))
+            {
+                var builder = new StringBuilder(name.Length);
+
+                foreach (var ch in name)
+                {
+                    builder.Append(IsInvalidPathChar(ch) ? "_" : ch);
+                }
+
+                name = builder.ToString();
+            }
+
+            return name.ToLower();
         }
 
         private static DatabaseSymbol CreateDatabaseSymbol(DatabaseInfo db)

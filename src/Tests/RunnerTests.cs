@@ -4,6 +4,7 @@ using System.Text;
 using System.Threading.Tasks;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Klint;
+using Kushy;
 using Kusto.Language;
 
 namespace Tests;
@@ -31,6 +32,7 @@ public class RunnerTests
     public async Task TestCache_Generate()
     {
         var testCachePath = GetTestCachePath();
+        var testLoader = new FileSymbolLoader(testCachePath, HelpCluster);
 
         Assert.IsFalse(Directory.Exists(testCachePath), "cache directory already exists?");
 
@@ -38,13 +40,13 @@ public class RunnerTests
         {
             await TestRunnerAsync($"-connection {HelpConnection} -cache {testCachePath} -generate", $"schema cache generated");
 
-            Assert.IsTrue(Directory.Exists(testCachePath), "Cache directory not created");
+            Assert.IsTrue(Directory.Exists(testCachePath), "cache directory not created");
 
-            var clusterCache = Path.Combine(testCachePath, HelpCluster);
-            Assert.IsTrue(Directory.Exists(clusterCache), "Cluster cache directory not created.");
+            var clusterCachePath = testLoader.GetClusterCachePath(HelpCluster);
+            Assert.IsTrue(Directory.Exists(clusterCachePath), "cluster cache directory not created.");
 
-            var samplesFile = Path.Combine(clusterCache, "Samples.json");
-            Assert.IsTrue(File.Exists(samplesFile), "Samples.json file not created");
+            var databasePath = testLoader.GetDatabaseCachePath(HelpCluster, "Samples");
+            Assert.IsTrue(File.Exists(databasePath), "database schema file not created");
         }
         finally
         {
@@ -91,7 +93,7 @@ public class RunnerTests
     {
         await TestRunnerNoSchemaAsync("", "print x=10 | where y > 0", 
 @"input: failed
-(1, 20): error: KS142 - The name 'y' does not refer to any known column, table, variable or function.");
+    (1, 20): error: KS142 - The name 'y' does not refer to any known column, table, variable or function.");
     }
 
     [TestMethod]
@@ -99,7 +101,7 @@ public class RunnerTests
     {
         await TestRunnerNoSchemaAsync("-database Samples", "StormEvents",
 @"input: failed
-(1, 1): error: KS142 - The name 'StormEvents' does not refer to any known column, table, variable or function.");
+    (1, 1): error: KS142 - The name 'StormEvents' does not refer to any known column, table, variable or function.");
     }
 
     [TestMethod]
@@ -131,7 +133,7 @@ public class RunnerTests
     {
         await TestRunnerCacheOnlyAsync($"-cluster help -database Samples", "StormEvents | where Source has 'ABC'",
 @"input: failed
-(1, 21): suggestion: KS503 - Avoid using short strings (less than 4 characters) for string comparison operations (see: https://aka.ms/kusto.stringterms).");
+    (1, 21): suggestion: KS503 - Avoid using short strings (less than 4 characters) for string comparison operations (see: https://aka.ms/kusto.stringterms).");
     }
 
     [TestMethod]
@@ -163,9 +165,18 @@ Queries/TwoQueriesNoErrorsSamplesDb.kql: succeeded");
     }
 
     [TestMethod]
+    public async Task TestFile_RecursivePattern()
+    {
+        await TestRunnerCacheOnlyAsync($"-database Samples **/*NoErrors*.kql",
+$@"Queries/OneQueryNoErrorsSamplesDb.kql: succeeded
+Queries/TwoQueriesNoErrorsSamplesDb.kql: succeeded");
+    }
+
+    [TestMethod]
     public async Task TestFile_UnknownTable_Fails()
     {
-        await TestFileFailsAsync("UnknownTable.kql", "(1, 1): error: KS204 - The name 'FlurgEvents' does not refer to any known table, tabular variable or function.");
+        await TestFileFailsAsync("UnknownTable.kql", 
+"    (1, 1): error: KS204 - The name 'FlurgEvents' does not refer to any known table, tabular variable or function.");
     }
 
     public async Task TestFileSucceedsAsync(string filename)

@@ -113,25 +113,33 @@ public class Runner
 
         if (pipedInput != null)
         {
-            await AnalyzeAsync(pipedInput, "input", analyzer);
             actionTaken = true;
+            await AnalyzeAsync(pipedInput, "input", analyzer);
         }
 
         if (filePaths.Count > 0)
         {
+            actionTaken = true;
             foreach (var filePath in filePaths)
             {
-                var fileText = await File.ReadAllTextAsync(filePath);
-                await AnalyzeAsync(fileText, filePath, analyzer);
+                var fileText = await LoadFileAsync(filePath);
+                if (fileText != null)
+                {
+                    await AnalyzeAsync(fileText, filePath, analyzer);
+                }
             }
-            actionTaken = true;
         }
 
-        if (actionTaken == false && pipedInput == null && options.FilePaths.Count == 0)
+        if (actionTaken == false && pipedInput == null && filePaths.Count == 0)
         {
-            LogMessage("no input");
-            _output.WriteLine();
-            DisplayHelp();
+            if (options.FilePaths.Count > 0)
+            {
+                LogMessage("no matching files");
+            }
+            else
+            {
+                LogMessage("no input");
+            }
         }
 
         async Task AnalyzeAsync(string text, string source, Analyzer analyzer)
@@ -148,8 +156,22 @@ public class Runner
 
                 foreach (var message in analysis.Messages)
                 {
+                    _output.Write("    ");
                     _output.WriteLine(message);
                 }
+            }
+        }
+
+        async Task<string?> LoadFileAsync(string filePath)
+        {
+            try
+            {
+                return await File.ReadAllTextAsync(filePath);
+            }
+            catch (Exception e)
+            {
+                LogMessage($"{filePath}: failed\n{e.Message}");
+                return null;
             }
         }
 

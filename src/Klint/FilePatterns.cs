@@ -43,6 +43,13 @@ public static class FilePatterns
         {
             yield return pattern;
         }
+        else if (pattern == "**")
+        {
+            foreach (var d in Directory.GetDirectories(".", "*", SearchOption.AllDirectories))
+            {
+                yield return NormalizePath(d);
+            }
+        }
         else
         {
             var directoryPath = Path.GetDirectoryName(pattern);
@@ -75,8 +82,11 @@ public static class FilePatterns
     {
         if (path.Contains("\\"))
         {
-            return path.Replace("\\", "/");
+            path = path.Replace("\\", "/");
         }
+
+        if (path.StartsWith("./"))
+            path = path.Substring(2);
 
         return path;
     }
