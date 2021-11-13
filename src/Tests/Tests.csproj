@@ -30,11 +30,11 @@
     <None Update="Queries\OneQueryNoErrorsSamplesDb.kql">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Update="Schemas\help.kusto.windows.net\KustoServiceLogs.json">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    <None Update="Schemas\help.kusto.windows.net\kustoservicelogs.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Update="Schemas\help.kusto.windows.net\Samples.json">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    <None Update="Schemas\help.kusto.windows.net\samples.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
 

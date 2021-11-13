@@ -19,7 +19,7 @@ public class RunnerTests
     [TestMethod]
     public async Task TestHelp()
     {
-        await TestRunnerAsync("-?", OptionsParser.HelpText);
+        await TestRunnerAsync("-?", Runner.HelpText);
     }
 
     [TestMethod]

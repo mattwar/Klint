@@ -17,7 +17,7 @@ public class Runner
 
     public async Task RunAsync(string[] args, string? pipedInput = null)
     {
-        var options = OptionsParser.Parse(args);
+        var options = Options.Parse(args);
 
         if (options.Errors.Count > 0)
         {
@@ -100,7 +100,7 @@ public class Runner
         var filePaths = FilePatterns.GetFilePaths(options.FilePaths).ToList();
 
         // pre-load default database schema if analysis is to occur
-        if (defaultDatabaseName != null 
+        if (defaultDatabaseName != null
             && loader != null
             && (pipedInput != null || filePaths.Count > 0))
         {
@@ -177,9 +177,42 @@ public class Runner
 
         void DisplayHelp()
         {
-            _output.WriteLine(OptionsParser.HelpText);
+            _output.WriteLine(HelpText);
         }
     }
+
+    public static string HelpText =
+@"klint [options] <files>
+
+options:
+  -? or -help           display this help text
+  -connection <string>  the connection to use to access schema from the server
+  -cache <path>         overrides the default path to the local schema cache directory
+  -nocache              disables use of the local schema cache
+  -generate             generates cached schemas for all databases
+  -delete               delete all cached schemas
+  -cluster <name>       the current cluster in scope (if no connection specified)
+  -database <name>      the current database in scope (if not specified by connection)
+
+files:
+   one or more file paths or file path patterns
+
+examples:
+   # Run analysis on MyQueries.kql using database schemas found in local cache or server
+   klint -connection ""https://help.kusto.windows.net;Fed=true"" -database Samples MyQueries.kql
+
+   # Run analysis on MyQueries.kql using database schemas found in local cache only
+   klint -cluster help.kusto.windows.net -database Samples MyQueries.kql
+
+   # Run analysis on MyQueries.kql using fresh database schemas from the server only
+   klint -connection ""https://help.kusto.windows.net;Fed=true"" -database Samples -nocache MyQueries.kql
+
+   # Run analysis on MyQueries.kql using no schemas at all (probably not a good idea)
+   klint -nocache MyQueries.kql
+
+   # Pre-generate local schema cache
+   klint -connection ""https://help.kusto.windows.net;Fed=true"" -generate
+";
 
     private static async Task GenerateCacheAsync(CachedServerSymbolLoader loader, CancellationToken cancellationToken)
     {

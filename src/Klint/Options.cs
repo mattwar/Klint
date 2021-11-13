@@ -1,7 +1,18 @@
 ﻿namespace Klint;
 
-public static class OptionsParser
+public record Options
 {
+    public IReadOnlyList<string> FilePaths { get; init; } = null!;
+    public IReadOnlyList<string> Errors { get; init; } = null!;
+    public string? ServerConnection { get; init; }
+    public string? DefaultCluster { get; init; }
+    public string? DefaultDatabase { get; init; }
+    public string? CachePath { get; init; }
+    public bool? NoCache { get; init; }
+    public bool? GenerateCache { get; init; }
+    public bool? DeleteCache { get; init; }
+    public bool? HelpRequested { get; init; }
+
     public static Options Parse(string[] args)
     {
         bool? help = null;
@@ -81,51 +92,4 @@ public static class OptionsParser
             HelpRequested = help,
         };
     }
-
-    public static string HelpText =
-@"klint [options] <files>
-
-options:
-  -? or -help           display this help text
-  -connection <string>  the connection to use to access schema from the server
-  -cache <path>         overrides the default path to the local schema cache directory
-  -nocache              disables use of the local schema cache
-  -generate             generates cached schemas for all databases
-  -delete               delete all cached schemas
-  -cluster <name>       the current cluster in scope (if no connection specified)
-  -database <name>      the current database in scope (if not specified by connection)
-
-files:
-   one or more file paths or file path patterns
-
-examples:
-   # Run analysis on MyQueries.kql using database schemas found in local cache or server
-   klint -connection ""https://help.kusto.windows.net;Fed=true"" -database Samples MyQueries.kql
-
-   # Run analysis on MyQueries.kql using database schemas found in local cache only
-   klint -cluster help.kusto.windows.net -database Samples MyQueries.kql
-
-   # Run analysis on MyQueries.kql using fresh database schemas from the server only
-   klint -connection ""https://help.kusto.windows.net;Fed=true"" -database Samples -nocache MyQueries.kql
-
-   # Run analysis on MyQueries.kql using no schemas at all (probably not a good idea)
-   klint -nocache MyQueries.kql
-
-   # Pre-generate local schema cache
-   klint -connection ""https://help.kusto.windows.net;Fed=true"" -generate
-";
-}
-
-public record Options
-{
-    public IReadOnlyList<string> FilePaths { get; init; } = null!;
-    public IReadOnlyList<string> Errors { get; init; } = null!;
-    public string? ServerConnection { get; init; }
-    public string? DefaultCluster { get; init; }
-    public string? DefaultDatabase { get; init; }
-    public string? CachePath { get; init; }
-    public bool? NoCache { get; init; }
-    public bool? GenerateCache { get; init; }
-    public bool? DeleteCache { get; init; }
-    public bool? HelpRequested { get; init; }
 }
