@@ -15,6 +15,7 @@
     -delete               deletes all cached schemas
     -cluster <name>       the current cluster in scope (if no connection specified)
     -database <name>      the current database in scope (if not specified by connection)
+    -disable <codes>      a comma separated list of diagnostic codes to disable
 
 ### files:
 
@@ -45,3 +46,8 @@
 #### Delete all cached schemas
 
     klint -delete
+
+#### Disable diagnostic codes
+
+    klint -cluster help -database samples -disable KS503,KS501 MyQueries.kql
+
