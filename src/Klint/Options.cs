@@ -12,6 +12,7 @@ public record Options
     public bool? GenerateCache { get; init; }
     public bool? DeleteCache { get; init; }
     public bool? HelpRequested { get; init; }
+    public string? Disable { get; init; }
 
     public static Options Parse(string[] args)
     {
@@ -23,6 +24,7 @@ public record Options
         bool? noCache = null;
         bool? generateCache = null;
         bool? deleteCache = null;
+        string? disable = null;
 
         List<string> filePaths = new List<string>();
         List<string> errors = new List<string>();
@@ -45,6 +47,11 @@ public record Options
             else if (arg == "-database" && iArg + 1 < args.Length)
             {
                 database = args[iArg + 1];
+                iArg++;
+            }
+            else if (arg == "-disable" && iArg + 1 < args.Length)
+            {
+                disable = args[iArg + 1];
                 iArg++;
             }
             else if (arg == "-cache" && iArg + 1 < args.Length)
@@ -90,6 +97,7 @@ public record Options
             GenerateCache = generateCache,
             DeleteCache = deleteCache,
             HelpRequested = help,
+            Disable = disable,
         };
     }
 }

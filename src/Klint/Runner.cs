@@ -1,5 +1,6 @@
 ﻿using Kushy;
 using Kusto.Language;
+using Kusto.Language.Editor;
 
 namespace Klint;
 
@@ -97,6 +98,12 @@ public class Runner
             actionTaken = true;
         }
 
+        var disabledCodes = new List<string>();
+        if (options.Disable != null)
+        {
+            disabledCodes.AddRange(options.Disable.Split(new char[] { ',', ';' }).Select(p => p.Trim()));
+        }
+
         var filePaths = FilePatterns.GetFilePaths(options.FilePaths).ToList();
 
         // pre-load default database schema if analysis is to occur
@@ -114,7 +121,7 @@ public class Runner
         if (pipedInput != null)
         {
             actionTaken = true;
-            await AnalyzeAsync(pipedInput, "input", analyzer);
+            await AnalyzeAsync(pipedInput, "input", disabledCodes, analyzer);
         }
 
         if (filePaths.Count > 0)
@@ -125,7 +132,7 @@ public class Runner
                 var fileText = await LoadFileAsync(filePath);
                 if (fileText != null)
                 {
-                    await AnalyzeAsync(fileText, filePath, analyzer);
+                    await AnalyzeAsync(fileText, filePath, disabledCodes, analyzer);
                 }
             }
         }
@@ -142,9 +149,9 @@ public class Runner
             }
         }
 
-        async Task AnalyzeAsync(string text, string source, Analyzer analyzer)
+        async Task AnalyzeAsync(string text, string source, IReadOnlyList<string> ignoreList, Analyzer analyzer)
         {
-            var analysis = await analyzer.AnalyzeAsync(text, CancellationToken.None);
+            var analysis = await analyzer.AnalyzeAsync(text, ignoreList, CancellationToken.None);
 
             if (analysis.Success)
             {
@@ -193,6 +200,7 @@ options:
   -delete               delete all cached schemas
   -cluster <name>       the current cluster in scope (if no connection specified)
   -database <name>      the current database in scope (if not specified by connection)
+  -disable <codes>      a comma separated list of diagnositic codes to disable
 
 files:
    one or more file paths or file path patterns

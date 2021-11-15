@@ -15,9 +15,10 @@ public class Analyzer
         _resolver = resolver;
     }
 
-    public async Task<AnalysisResult> AnalyzeAsync(string text, CancellationToken ct)
+    public async Task<AnalysisResult> AnalyzeAsync(string text, IReadOnlyList<string> ignoreCodes, CancellationToken ct)
     {
         var script = CodeScript.From(text, _globals);
+        var ignoreSet = ignoreCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         if (_resolver != null)
         {
@@ -33,18 +34,30 @@ public class Analyzer
 
             foreach (var d in dx)
             {
-                messages.Add(GetMessage(d, script));
+                if (Include(d))
+                {
+                    messages.Add(GetMessage(d, script));
+                }
             }
 
             var adx = block.Service.GetAnalyzerDiagnostics(cancellationToken: ct);
 
             foreach (var d in adx)
             {
-                messages.Add(GetMessage(d, script));
+                if (Include(d))
+                {
+                    messages.Add(GetMessage(d, script));
+                }
             }
         }
 
         return new AnalysisResult(messages.Count == 0, messages.AsReadOnly());
+
+        bool Include(Diagnostic d)
+        {
+            return ignoreSet.Count == 0 
+                || !(ignoreSet.Contains(d.Code) || ignoreSet.Contains(d.Severity) || ignoreSet.Contains(d.Category));
+        }
     }
 
     private string GetMessage(Diagnostic d, CodeScript script)

@@ -137,6 +137,18 @@ public class RunnerTests
     }
 
     [TestMethod]
+    public async Task TestAnalysis_Disable_Code()
+    {
+        await TestRunnerCacheOnlyAsync($"-cluster help -database Samples -disable KS503", "StormEvents | where Source has 'ABC'", @"input: succeeded");
+    }
+
+    [TestMethod]
+    public async Task TestAnalysis_Disable_Severity()
+    {
+        await TestRunnerCacheOnlyAsync($"-cluster help -database Samples -disable suggestion", "StormEvents | where Source has 'ABC'", @"input: succeeded");
+    }
+
+    [TestMethod]
     public async Task TestFile_OneQuery()
     {
         await TestFileSucceedsAsync("OneQueryNoErrorsSamplesDb.kql");
