@@ -1,28 +1,26 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 using Kusto.Cloud.Platform.Data;
 using Kusto.Data;
 using Kusto.Data.Data;
 using Kusto.Data.Net.Client;
 using Kusto.Language;
 using Kusto.Language.Editor;
-using Kusto.Language.Syntax;
 using Kusto.Language.Symbols;
+using Kusto.Data.Common;
 using Newtonsoft.Json;
-using static Kushy.Helpers;
 
-#nullable disable
+#nullable disable // some day...
 
 namespace Kushy
 {
+    using static SymbolFacts;
+
     /// <summary>
     /// A class that retrieves schema information from a cluster as <see cref="Symbol"/> instances.
     /// </summary>
-    public abstract class SymbolLoader
+    public abstract class SymbolLoader : IDisposable
     {
         public abstract string DefaultCluster { get; }
         public abstract string DefaultDomain { get; }
@@ -85,6 +83,8 @@ namespace Kushy
 
             return globals;
         }
+
+        public virtual void Dispose() { }
     }
 
     /// <summary>
@@ -95,7 +95,9 @@ namespace Kushy
         private readonly KustoConnectionStringBuilder _defaultConnection;
         private readonly string _defaultClusterName;
         private readonly string _defaultDomain;
-        private readonly Dictionary<string, HashSet<string>> _badDatabaseNameMap = new Dictionary<string, HashSet<string>>();
+        private readonly Dictionary<string, ICslAdminProvider> _dataSourceToAdminProviderMap = new Dictionary<string, ICslAdminProvider>();
+        private readonly HashSet<string> _ignoreClusterNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, HashSet<string>> _clusterToBadDbNameMap = new Dictionary<string, HashSet<string>>();
 
         /// <summary>
         /// Creates a new <see cref="SymbolLoader"/> instance. recommended method: SymbolLoader(KustoConnectionStringBuilder clusterConnection)
@@ -120,18 +122,48 @@ namespace Kushy
         {
             _defaultConnection = clusterConnection;
             _defaultClusterName = GetHost(clusterConnection);
-            _defaultDomain = String.IsNullOrEmpty(defaultDomain) 
+            _defaultDomain = String.IsNullOrEmpty(defaultDomain)
                 ? KustoFacts.KustoWindowsNet
                 : defaultDomain;
         }
 
-        public override string DefaultCluster => _defaultClusterName;
         public override string DefaultDomain => _defaultDomain;
+
+        public override string DefaultCluster => _defaultClusterName;
 
         /// <summary>
         /// The default database specified in the connection
         /// </summary>
         public string DefaultDatabase => _defaultConnection.InitialCatalog;
+
+        /// <summary>
+        /// Dispose any open resources.
+        /// </summary>
+        public override void Dispose()
+        {
+            // Disposes any open admin providers.
+            var providers = _dataSourceToAdminProviderMap.Values.ToList();
+            _dataSourceToAdminProviderMap.Clear();
+
+            foreach (var provider in providers)
+            {
+                provider.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// Gets or Creates an admin provider instance.
+        /// </summary>
+        private ICslAdminProvider GetOrCreateAdminProvider(KustoConnectionStringBuilder connection)
+        {
+            if (!_dataSourceToAdminProviderMap.TryGetValue(connection.DataSource, out var provider))
+            {
+                provider = KustoClientFactory.CreateCslAdminProvider(connection);
+                _dataSourceToAdminProviderMap.Add(connection.DataSource, provider);
+            }
+
+            return provider;
+        }
 
         /// <summary>
         /// Gets a list of all the database names in the cluster associated with the connection.
@@ -143,7 +175,9 @@ namespace Kushy
                 : GetFullHostName(clusterName, _defaultDomain);
 
             var connection = GetClusterConnection(clusterName);
-            var databases = await ExecuteControlCommandAsync<ShowDatabasesResult>(connection, "", ".show databases", throwOnError, cancellationToken);
+            var provider = GetOrCreateAdminProvider(connection);
+
+            var databases = await ExecuteControlCommandAsync<ShowDatabasesResult>(provider, "", ".show databases", throwOnError, cancellationToken);
             if (databases == null)
                 return null;
 
@@ -160,27 +194,28 @@ namespace Kushy
                 : GetFullHostName(clusterName, _defaultDomain);
 
             // if we've already determined this database name is bad, then bail out
-            if (_badDatabaseNameMap.TryGetValue(clusterName, out var badDbNames)
+            if (_clusterToBadDbNameMap.TryGetValue(clusterName, out var badDbNames)
                 && badDbNames.Contains(databaseName))
                 return null;
 
             var connection = GetClusterConnection(clusterName);
+            var provider = GetOrCreateAdminProvider(connection);
 
-            var tables = await LoadTablesAsync(connection, databaseName, throwOnError, cancellationToken).ConfigureAwait(false);
+            var tables = await LoadTablesAsync(provider, databaseName, throwOnError, cancellationToken).ConfigureAwait(false);
             if (tables == null)
             {
                 if (badDbNames == null)
                 {
                     badDbNames = new HashSet<string>();
-                    _badDatabaseNameMap.Add(clusterName, badDbNames);
+                    _clusterToBadDbNameMap.Add(clusterName, badDbNames);
                 }
                 badDbNames.Add(databaseName);
                 return null;
             }
 
-            var externalTables = await LoadExternalTablesAsync(connection, databaseName, throwOnError, cancellationToken).ConfigureAwait(false);
-            var materializedViews = await LoadMaterializedViewsAsync(connection, databaseName, throwOnError, cancellationToken).ConfigureAwait(false);
-            var functions = await LoadFunctionsAsync(connection, databaseName, throwOnError, cancellationToken).ConfigureAwait(false);
+            var externalTables = await LoadExternalTablesAsync(provider, databaseName, throwOnError, cancellationToken).ConfigureAwait(false);
+            var materializedViews = await LoadMaterializedViewsAsync(provider, databaseName, throwOnError, cancellationToken).ConfigureAwait(false);
+            var functions = await LoadFunctionsAsync(provider, databaseName, throwOnError, cancellationToken).ConfigureAwait(false);
 
             var members = new List<Symbol>();
             members.AddRange(tables);
@@ -192,12 +227,12 @@ namespace Kushy
             return databaseSymbol;
         }
 
-        private async Task<IReadOnlyList<TableSymbol>> LoadTablesAsync(KustoConnectionStringBuilder connection, string databaseName, bool throwOnError, CancellationToken cancellationToken)
+        private async Task<IReadOnlyList<TableSymbol>> LoadTablesAsync(ICslAdminProvider provider, string databaseName, bool throwOnError, CancellationToken cancellationToken)
         {
             var tables = new List<TableSymbol>();
 
             // get table schema from .show database xxx schema
-            var databaseSchemas = await ExecuteControlCommandAsync<ShowDatabaseSchemaResult>(connection, databaseName, $".show database {databaseName} schema", throwOnError, cancellationToken).ConfigureAwait(false);
+            var databaseSchemas = await ExecuteControlCommandAsync<ShowDatabaseSchemaResult>(provider, databaseName, $".show database {databaseName} schema", throwOnError, cancellationToken).ConfigureAwait(false);
             if (databaseSchemas == null)
                 return null;
 
@@ -213,20 +248,20 @@ namespace Kushy
             return tables;
         }
 
-        private async Task<IReadOnlyList<TableSymbol>> LoadExternalTablesAsync(KustoConnectionStringBuilder connection, string databaseName, bool throwOnError, CancellationToken cancellationToken)
+        private async Task<IReadOnlyList<TableSymbol>> LoadExternalTablesAsync(ICslAdminProvider provider, string databaseName, bool throwOnError, CancellationToken cancellationToken)
         {
             var tables = new List<TableSymbol>();
 
             // get external tables from .show external tables and .show external table xxx cslschema
-            var externalTables = await ExecuteControlCommandAsync<ShowExternalTablesResult>(connection, databaseName, ".show external tables", throwOnError, cancellationToken);
+            var externalTables = await ExecuteControlCommandAsync<ShowExternalTablesResult>(provider, databaseName, ".show external tables", throwOnError, cancellationToken);
             if (externalTables != null)
             {
                 foreach (var et in externalTables)
                 {
-                    var etSchemas = await ExecuteControlCommandAsync<ShowExternalTableSchemaResult>(connection, databaseName, $".show external table {et.TableName} cslschema", throwOnError, cancellationToken);
+                    var etSchemas = await ExecuteControlCommandAsync<ShowExternalTableSchemaResult>(provider, databaseName, $".show external table {et.TableName} cslschema", throwOnError, cancellationToken);
                     if (etSchemas != null && etSchemas.Length > 0)
                     {
-                        var mvSymbol = new TableSymbol(et.TableName, "(" + etSchemas[0].Schema + ")", et.DocString).WithIsExternal(true);
+                        var mvSymbol = new ExternalTableSymbol(et.TableName, "(" + etSchemas[0].Schema + ")", et.DocString);
                         tables.Add(mvSymbol);
                     }
                 }
@@ -235,20 +270,20 @@ namespace Kushy
             return tables;
         }
 
-        private async Task<IReadOnlyList<TableSymbol>> LoadMaterializedViewsAsync(KustoConnectionStringBuilder connection, string databaseName, bool throwOnError, CancellationToken cancellationToken)
+        private async Task<IReadOnlyList<TableSymbol>> LoadMaterializedViewsAsync(ICslAdminProvider provider, string databaseName, bool throwOnError, CancellationToken cancellationToken)
         {
             var tables = new List<TableSymbol>();
 
             // get materialized views from .show materialized-views and .show materialized-view xxx cslschema
-            var materializedViews = await ExecuteControlCommandAsync<ShowMaterializedViewsResult>(connection, databaseName, ".show materialized-views", throwOnError, cancellationToken);
+            var materializedViews = await ExecuteControlCommandAsync<ShowMaterializedViewsResult>(provider, databaseName, ".show materialized-views", throwOnError, cancellationToken); ;
             if (materializedViews != null)
             {
                 foreach (var mv in materializedViews)
                 {
-                    var mvSchemas = await ExecuteControlCommandAsync<ShowMaterializedViewSchemaResult>(connection, databaseName, $".show materialized-view {mv.Name} cslschema", throwOnError, cancellationToken);
+                    var mvSchemas = await ExecuteControlCommandAsync<ShowMaterializedViewSchemaResult>(provider, databaseName, $".show materialized-view {mv.Name} cslschema", throwOnError, cancellationToken);
                     if (mvSchemas != null && mvSchemas.Length > 0)
                     {
-                        var mvSymbol = new TableSymbol(mv.Name, "(" + mvSchemas[0].Schema + ")", mv.DocString).WithIsMaterializedView(true);
+                        var mvSymbol = new MaterializedViewSymbol(mv.Name, "(" + mvSchemas[0].Schema + ")", mv.Query, mv.DocString);
                         tables.Add(mvSymbol);
                     }
                 }
@@ -257,18 +292,17 @@ namespace Kushy
             return tables;
         }
 
-        private async Task<IReadOnlyList<FunctionSymbol>> LoadFunctionsAsync(KustoConnectionStringBuilder connection, string databaseName, bool throwOnError, CancellationToken cancellationToken)
+        private async Task<IReadOnlyList<FunctionSymbol>> LoadFunctionsAsync(ICslAdminProvider provider, string databaseName, bool throwOnError, CancellationToken cancellationToken)
         {
             var functions = new List<FunctionSymbol>();
 
             // get functions for .show functions
-            var functionSchemas = await ExecuteControlCommandAsync<ShowFunctionsResult>(connection, databaseName, ".show functions", throwOnError, cancellationToken).ConfigureAwait(false);
+            var functionSchemas = await ExecuteControlCommandAsync<ShowFunctionsResult>(provider, databaseName, ".show functions", throwOnError, cancellationToken).ConfigureAwait(false);
             if (functionSchemas == null)
                 return null;
 
             foreach (var fun in functionSchemas)
             {
-                //var parameters = TranslateParameters(fun.Parameters);
                 var functionSymbol = new FunctionSymbol(fun.Name, fun.Parameters, fun.Body, fun.DocString);
                 functions.Add(functionSymbol);
             }
@@ -279,18 +313,15 @@ namespace Kushy
         /// <summary>
         /// Executes a query or command against a kusto cluster and returns a sequence of result row instances.
         /// </summary>
-        private static async Task<T[]> ExecuteControlCommandAsync<T>(KustoConnectionStringBuilder connection, string database, string command, bool throwOnError, CancellationToken cancellationToken)
+        private async Task<T[]> ExecuteControlCommandAsync<T>(ICslAdminProvider provider, string database, string command, bool throwOnError, CancellationToken cancellationToken)
         {
             try
             {
-                using (var client = KustoClientFactory.CreateCslAdminProvider(connection))
-                {
-                    var resultReader = await client.ExecuteControlCommandAsync(database, command).ConfigureAwait(false);
-                    var results = KustoDataReaderParser.ParseV1(resultReader, null);
-                    var tableReader = results[WellKnownDataSet.PrimaryResult].Single().TableData.CreateDataReader();
-                    var objectReader = new ObjectReader<T>(tableReader);
-                    return objectReader.ToArray();
-                }
+                var resultReader = await provider.ExecuteControlCommandAsync(database, command).ConfigureAwait(false);
+                var results = KustoDataReaderParser.ParseV1(resultReader, null);
+                var tableReader = results[WellKnownDataSet.PrimaryResult].Single().TableData.CreateDataReader();
+                var objectReader = new ObjectReader<T>(tableReader);
+                return objectReader.ToArray();
             }
             catch (Exception) when (!throwOnError)
             {
@@ -298,17 +329,8 @@ namespace Kushy
             }
         }
 
-        private string GetClusterHost(string clusterName)
-        {
-            return GetHost(GetClusterConnection(clusterName));
-        }
-
-        private string GetHost(KustoConnectionStringBuilder connection)
-        {
-            //var csb = new KustoConnectionStringBuilder(connection);
-            var uri = new Uri(connection.DataSource);
-            return uri.Host;
-        }
+        private string GetHost(KustoConnectionStringBuilder connection) =>
+            new Uri(connection.DataSource).Host;
 
         private KustoConnectionStringBuilder GetClusterConnection(string clusterUriOrName)
         {
@@ -318,25 +340,26 @@ namespace Kushy
                 return _defaultConnection;
             }
 
-            // borrow most security settings from default cluster connection
-            var builder = new KustoConnectionStringBuilder(_defaultConnection);
-
             if (string.IsNullOrWhiteSpace(clusterUriOrName))
                 return null;
 
             var clusterUri = clusterUriOrName;
 
+            if (!clusterUri.Contains("://"))
+            {
+                clusterUri = _defaultConnection.ConnectionScheme + "://" + clusterUri;
+            }
+
             clusterUri = KustoFacts.GetFullHostName(clusterUri, _defaultDomain);
 
-            if (!clusterUri.Contains("://"))
-                clusterUri = builder.ConnectionScheme + "://" + clusterUri;
+            // borrow most security settings from default cluster connection
+            var connection = new KustoConnectionStringBuilder(_defaultConnection);
+            connection.DataSource = clusterUri;
+            connection.ApplicationCertificateBlob = _defaultConnection.ApplicationCertificateBlob;
+            connection.ApplicationKey = _defaultConnection.ApplicationKey;
+            connection.InitialCatalog = "NetDefaultDB";
 
-            builder.DataSource = clusterUri;
-            builder.ApplicationCertificateBlob = _defaultConnection.ApplicationCertificateBlob;
-            builder.ApplicationKey = _defaultConnection.ApplicationKey;
-            builder.InitialCatalog = "NetDefaultDB";
-
-            return builder;
+            return connection;
         }
 
         public class ShowDatabasesResult
@@ -382,6 +405,7 @@ namespace Kushy
         {
             public string Name;
             public string DocString;
+            public string Query;
         }
 
         public class ShowMaterializedViewSchemaResult
@@ -401,7 +425,7 @@ namespace Kushy
     }
 
     /// <summary>
-    /// A class that loads symbol schema from text files
+    /// A <see cref="SymbolLoader"/> that loads symbol schema from text files.
     /// </summary>
     public class FileSymbolLoader : SymbolLoader
     {
@@ -430,7 +454,7 @@ namespace Kushy
         /// </summary>
         public override async Task<DatabaseSymbol> LoadDatabaseAsync(string databaseName, string clusterName = null, bool throwOnError = false, CancellationToken cancellationToken = default)
         {
-            var databasePath = GetDatabaseCachePath(clusterName, databaseName);
+            var databasePath = GetDatabaseCachePath(databaseName, clusterName);
 
             if (databasePath != null)
             {
@@ -439,8 +463,8 @@ namespace Kushy
                     if (File.Exists(databasePath))
                     {
                         var jsonText = await File.ReadAllTextAsync(databasePath).ConfigureAwait(false);
-                        var cachedDb = JsonConvert.DeserializeObject<DatabaseInfo>(jsonText);
-                        return CreateDatabaseSymbol(cachedDb);
+                        var dbInfo = JsonConvert.DeserializeObject<DatabaseInfo>(jsonText);
+                        return CreateDatabaseSymbol(dbInfo);
                     }
                 }
                 catch (Exception) when (!throwOnError)
@@ -451,27 +475,19 @@ namespace Kushy
             return null;
         }
 
-        private static readonly JsonSerializerSettings s_serializationSettings =
-            new JsonSerializerSettings()
-            {
-                DefaultValueHandling = DefaultValueHandling.Ignore,
-                Formatting = Formatting.Indented,
-            };
-
         /// <summary>
         /// Saves the database schema to the cache.
         /// </summary>
         public async Task<bool> SaveDatabaseAsync(DatabaseSymbol database, string clusterName = null, bool throwOnError = false, CancellationToken cancellationToken = default)
         {
             var clusterPath = GetClusterCachePath(clusterName);
-            var databasePath = GetDatabaseCachePath(clusterName, database.Name);
+            var databasePath = GetDatabaseCachePath(database.Name, clusterName);
 
             if (clusterPath != null && databasePath != null)
             {
                 try
                 {
-                    var cachedDb = CreateDatabaseInfo(database);
-                    var jsonText = JsonConvert.SerializeObject(cachedDb, s_serializationSettings);
+                    var jsonText = SerializeDatabase(database);
 
                     if (!Directory.Exists(_schemaDirectoryPath))
                     {
@@ -509,12 +525,37 @@ namespace Kushy
         /// <summary>
         /// Saves all the schema for all the clusters to the cache.
         /// </summary>
-        public async Task SaveClusters(IEnumerable<ClusterSymbol> clusters, CancellationToken cancellationToken = default)
+        public async Task SaveClustersAsync(IEnumerable<ClusterSymbol> clusters, CancellationToken cancellationToken = default)
         {
             foreach (var cluster in clusters)
             {
                 await SaveClusterAsync(cluster, cancellationToken).ConfigureAwait(false);
             }
+        }
+
+        private static readonly JsonSerializerSettings s_serializationSettings =
+            new JsonSerializerSettings()
+            {
+                DefaultValueHandling = DefaultValueHandling.Ignore,
+                Formatting = Formatting.Indented,
+            };
+
+        /// <summary>
+        /// Gets the serialized representation of the <see cref="DatabaseSymbol"/>
+        /// </summary>
+        public static string SerializeDatabase(DatabaseSymbol database)
+        {
+            var dbInfo = CreateDatabaseInfo(database);
+            return JsonConvert.SerializeObject(dbInfo, s_serializationSettings);
+        }
+
+        /// <summary>
+        /// Gets the <see cref="DatabaseSymbol"/> for the serialization text of a database.
+        /// </summary>
+        public static DatabaseSymbol DeserializeDatabase(string serializedDatabase)
+        {
+            var dbInfo = JsonConvert.DeserializeObject<DatabaseInfo>(serializedDatabase);
+            return CreateDatabaseSymbol(dbInfo);
         }
 
         /// <summary>
@@ -565,7 +606,10 @@ namespace Kushy
             return true;
         }
 
-        public string GetClusterCachePath(string clusterName)
+        /// <summary>
+        /// Gets path to the cluster cache directory within the schema cache directory.
+        /// </summary>
+        public string GetClusterCachePath(string clusterName = null)
         {
             clusterName = clusterName ?? _defaultClusterName;
             if (clusterName == null)
@@ -575,7 +619,10 @@ namespace Kushy
             return Path.Combine(_schemaDirectoryPath, MakeFilePathPart(fullClusterName));
         }
 
-        public string GetDatabaseCachePath(string clusterName, string databaseName)
+        /// <summary>
+        /// Gets the path to the database schema file.
+        /// </summary>
+        public string GetDatabaseCachePath(string databaseName, string clusterName = null)
         {
             clusterName = clusterName ?? _defaultClusterName;
             if (clusterName == null)
@@ -625,14 +672,14 @@ namespace Kushy
             return new TableSymbol(tab.Name, tab.Schema, tab.Description);
         }
 
-        private static TableSymbol CreateExternalTableSymbol(ExternalTableInfo xtab)
+        private static ExternalTableSymbol CreateExternalTableSymbol(ExternalTableInfo xtab)
         {
-            return new TableSymbol(xtab.Name, xtab.Schema, xtab.Description).WithIsExternal(true);
+            return new ExternalTableSymbol(xtab.Name, xtab.Schema, xtab.Description);
         }
 
-        private static TableSymbol CreateMaterializedViewSymbol(MaterializedViewInfo mview)
+        private static MaterializedViewSymbol CreateMaterializedViewSymbol(MaterializedViewInfo mview)
         {
-            return new TableSymbol(mview.Name, mview.Schema, mview.Description).WithIsMaterializedView(true);
+            return new MaterializedViewSymbol(mview.Name, mview.Schema, mview.Query, mview.Description);
         }
 
         public static FunctionSymbol CreateFunctionSymbol(FunctionInfo fun)
@@ -652,44 +699,45 @@ namespace Kushy
             };
         }
 
-        private static TableInfo CreateTableInfo(TableSymbol tab)
+        private static TableInfo CreateTableInfo(TableSymbol symbol)
         {
             return new TableInfo
             {
-                Name = tab.Name,
-                Schema = GetSchema(tab),
-                Description = string.IsNullOrEmpty(tab.Description) ? null : tab.Description
+                Name = symbol.Name,
+                Schema = GetSchema(symbol),
+                Description = string.IsNullOrEmpty(symbol.Description) ? null : symbol.Description
             };
         }
 
-        private static ExternalTableInfo CreateExternalTableInfo(TableSymbol tab)
+        private static ExternalTableInfo CreateExternalTableInfo(TableSymbol symbol)
         {
             return new ExternalTableInfo
             {
-                Name = tab.Name,
-                Schema = GetSchema(tab),
-                Description = string.IsNullOrEmpty(tab.Description) ? null : tab.Description
+                Name = symbol.Name,
+                Schema = GetSchema(symbol),
+                Description = string.IsNullOrEmpty(symbol.Description) ? null : symbol.Description
             };
         }
 
-        private static MaterializedViewInfo CreateMaterializedViewInfo(TableSymbol tab)
+        private static MaterializedViewInfo CreateMaterializedViewInfo(MaterializedViewSymbol symbol)
         {
             return new MaterializedViewInfo
             {
-                Name = tab.Name,
-                Schema = GetSchema(tab),
-                Description = string.IsNullOrEmpty(tab.Description) ? null : tab.Description
+                Name = symbol.Name,
+                Schema = GetSchema(symbol),
+                Description = string.IsNullOrEmpty(symbol.Description) ? null : symbol.Description,
+                Query = symbol.MaterializedViewQuery
             };
         }
 
-        private static FunctionInfo CreateFunctionInfo(FunctionSymbol fun)
+        private static FunctionInfo CreateFunctionInfo(FunctionSymbol symbol)
         {
             return new FunctionInfo
             {
-                Name = fun.Name,
-                Parameters = GetParameterList(fun.Signatures[0]),
-                Body = fun.Signatures[0].Body,
-                Description = string.IsNullOrEmpty(fun.Description) ? null : fun.Description
+                Name = symbol.Name,
+                Parameters = GetParameterList(symbol),
+                Body = symbol.Signatures[0].Body,
+                Description = string.IsNullOrEmpty(symbol.Description) ? null : symbol.Description
             };
         }
 
@@ -721,6 +769,7 @@ namespace Kushy
             public string Name;
             public string Schema;
             public string Description;
+            public string Query;
         }
 
         public class FunctionInfo
@@ -733,27 +782,39 @@ namespace Kushy
     }
 
     /// <summary>
-    /// A <see cref="SymbolLoader"/> that maintains a file cache of database schemas.
+    /// A <see cref="SymbolLoader"/> that maintains a file based cache of database schemas.
     /// </summary>
     public class CachedServerSymbolLoader : SymbolLoader
     {
         public FileSymbolLoader FileLoader { get; }
         public ServerSymbolLoader ServerLoader { get; }
+        private bool _autoDispose;
 
         public CachedServerSymbolLoader(string connection, string cachePath, string defaultDomain = null)
         {
             this.ServerLoader = new ServerSymbolLoader(connection, defaultDomain);
             this.FileLoader = new FileSymbolLoader(cachePath, this.ServerLoader.DefaultCluster, defaultDomain);
+            _autoDispose = true;
         }
 
-        public CachedServerSymbolLoader(ServerSymbolLoader serverLoader, FileSymbolLoader fileLoader)
+        public CachedServerSymbolLoader(ServerSymbolLoader serverLoader, FileSymbolLoader fileLoader, bool autoDispose = true)
         {
             this.ServerLoader = serverLoader;
             this.FileLoader = fileLoader;
+            _autoDispose = autoDispose;
         }
 
         public override string DefaultCluster => this.ServerLoader.DefaultCluster;
         public override string DefaultDomain => this.ServerLoader.DefaultDomain;
+
+        public override void Dispose()
+        {
+            if (_autoDispose)
+            {
+                this.FileLoader.Dispose();
+                this.ServerLoader.Dispose();
+            }
+        }
 
         public override async Task<string[]> GetDatabaseNamesAsync(string clusterName = null, bool throwOnError = false, CancellationToken cancellationToken = default)
         {
@@ -798,6 +859,9 @@ namespace Kushy
         private readonly SymbolLoader _loader;
         private readonly HashSet<string> _ignoreClusterNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>
+        /// Creates a new <see cref="SymbolResolver"/> instance that is used to resolve cluster/database references in kusto queries.
+        /// </summary>
         public SymbolResolver(SymbolLoader loader)
         {
             _loader = loader;
@@ -837,7 +901,7 @@ namespace Kushy
             var clusterRefs = service.GetClusterReferences(cancellationToken);
             foreach (ClusterReference clusterRef in clusterRefs)
             {
-                var clusterName = GetFullHostName(clusterRef.Cluster, _loader.DefaultDomain);
+                var clusterName = SymbolFacts.GetFullHostName(clusterRef.Cluster, _loader.DefaultDomain);
 
                 // don't bother with cluster names that we've already shown to not exist
                 if (_ignoreClusterNames.Contains(clusterName))
@@ -867,7 +931,7 @@ namespace Kushy
             {
                 var clusterName = string.IsNullOrEmpty(dbRef.Cluster)
                     ? null
-                    : GetFullHostName(dbRef.Cluster, _loader.DefaultDomain);
+                    : SymbolFacts.GetFullHostName(dbRef.Cluster, _loader.DefaultDomain);
 
                 // get implicit or explicit named cluster
                 var cluster = string.IsNullOrEmpty(clusterName)
@@ -892,7 +956,7 @@ namespace Kushy
         }
     }
 
-    internal static class Helpers
+    public static class SymbolFacts
     {
         public static string GetFullHostName(string clusterNameOrUri, string defaultDomain)
         {
@@ -974,11 +1038,17 @@ namespace Kushy
             }
         }
 
+        /// <summary>
+        /// Gets the schema representation of a table as it would be represented in Kusto.
+        /// </summary>
         public static string GetSchema(TableSymbol table)
         {
-            return "(" + string.Join(", ", table.Columns.Select(c => $"{c.Name}: {GetKustoType(c.Type)}")) + ")";
+            return "(" + string.Join(", ", table.Columns.Select(c => $"{KustoFacts.BracketNameIfNecessary(c.Name)}: {GetKustoType(c.Type)}")) + ")";
         }
 
+        /// <summary>
+        /// Gets the text for a type/schema declaration as it would be represented in a kusto query.
+        /// </summary>
         public static string GetKustoType(TypeSymbol type)
         {
             if (type is ScalarSymbol s)
@@ -1002,6 +1072,9 @@ namespace Kushy
             }
         }
 
+        /// <summary>
+        /// Gets the text for a parameter type/schema declaration as it would be represented a kusto query.
+        /// /// </summary>
         public static string GetFunctionParameterType(Parameter p)
         {
             switch (p.TypeKind)
@@ -1015,14 +1088,20 @@ namespace Kushy
             }
         }
 
+        /// <summary>
+        /// Gets the text of a parameter list of the specified function as it would appear in a kusto query.
+        /// </summary>
         public static string GetParameterList(FunctionSymbol fun)
         {
             return GetParameterList(fun.Signatures[0]);
         }
 
-        public static string GetParameterList(Signature sig)
+        /// <summary>
+        /// Gets the text of the parameter list for the specified function signature as it would appear in a kusto query.
+        /// </summary>
+        private static string GetParameterList(Signature sig)
         {
-            return "(" + string.Join(", ", sig.Parameters.Select(p => $"{p.Name}: {GetFunctionParameterType(p)}")) + ")";
+            return "(" + string.Join(", ", sig.Parameters.Select(p => $"{KustoFacts.BracketNameIfNecessary(p.Name)}: {GetFunctionParameterType(p)}")) + ")";
         }
     }
 }

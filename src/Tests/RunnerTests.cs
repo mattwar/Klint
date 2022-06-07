@@ -45,7 +45,7 @@ public class RunnerTests
             var clusterCachePath = testLoader.GetClusterCachePath(HelpCluster);
             Assert.IsTrue(Directory.Exists(clusterCachePath), "cluster cache directory not created.");
 
-            var databasePath = testLoader.GetDatabaseCachePath(HelpCluster, "Samples");
+            var databasePath = testLoader.GetDatabaseCachePath("Samples", HelpCluster);
             Assert.IsTrue(File.Exists(databasePath), "database schema file not created");
         }
         finally
