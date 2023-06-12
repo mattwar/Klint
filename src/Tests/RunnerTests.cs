@@ -4,8 +4,7 @@ using System.Text;
 using System.Threading.Tasks;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Klint;
-using Kushy;
-using Kusto.Language;
+using Kusto.Toolkit;
 
 namespace Tests;
 
@@ -131,9 +130,9 @@ public class RunnerTests
     [TestMethod]
     public async Task TestAnalysis_HasStringLength()
     {
-        await TestRunnerCacheOnlyAsync($"-cluster help -database Samples", "StormEvents | where Source has 'ABC'",
+        await TestRunnerCacheOnlyAsync($"-cluster help -database Samples", "StormEvents | where Source has 'AB'",
 @"input: failed
-    (1, 21): suggestion: KS503 - Avoid using short strings (less than 4 characters) for string comparison operations (see: https://aka.ms/kusto.stringterms).");
+    (1, 32): suggestion: KS503 - Avoid using short strings (less than 3 characters) for string comparison operations (see: https://aka.ms/kusto.stringterms).");
     }
 
     [TestMethod]

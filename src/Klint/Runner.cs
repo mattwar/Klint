@@ -1,6 +1,8 @@
-﻿using Kushy;
-using Kusto.Language;
+﻿using Kusto.Language;
+using Kusto.Language.Symbols;
 using Kusto.Language.Editor;
+using Kusto.Toolkit;
+using Kusto.Data;
 
 namespace Klint;
 
@@ -38,7 +40,7 @@ public class Runner
         string? defaultClusterName = null;
         string? defaultDatabaseName = null;
         SymbolLoader? loader = null;
-        CachedServerSymbolLoader? cachedLoader = null;
+        CachedSymbolLoader? cachedLoader = null;
         FileSymbolLoader? fileLoader = null;
         var actionTaken = false;
 
@@ -50,16 +52,17 @@ public class Runner
 
         if (!string.IsNullOrEmpty(options.ServerConnection))
         {
+            var connection = new KustoConnectionStringBuilder(options.ServerConnection);
             if (options.NoCache == true)
             {
-                var serverLoader = new ServerSymbolLoader(options.ServerConnection);
+                var serverLoader = new ServerSymbolLoader(connection);
                 defaultClusterName = serverLoader.DefaultCluster;
                 defaultDatabaseName = serverLoader.DefaultDatabase;
                 loader = serverLoader;
             }
             else
             {
-                cachedLoader = new CachedServerSymbolLoader(options.ServerConnection, cachePath);
+                cachedLoader = new CachedSymbolLoader(connection, cachePath);
                 defaultClusterName = cachedLoader.ServerLoader.DefaultCluster;
                 defaultDatabaseName = cachedLoader.ServerLoader.DefaultDatabase;
                 fileLoader = cachedLoader.FileLoader;
@@ -75,7 +78,7 @@ public class Runner
         if (loader == null && options.NoCache != true)
         {
             // load symbols just from local cache
-            loader = fileLoader = new FileSymbolLoader(cachePath, defaultClusterName);
+            loader = fileLoader = new FileSymbolLoader(cachePath, defaultClusterName ?? "cluster");
         }
 
         if (!string.IsNullOrEmpty(options.DefaultDatabase))
@@ -111,7 +114,13 @@ public class Runner
             && loader != null
             && (pipedInput != null || filePaths.Count > 0))
         {
+            // intialize default cluster and database
             globals = await loader.AddOrUpdateDefaultDatabaseAsync(globals, defaultDatabaseName, defaultClusterName);
+        }
+        else if (!string.IsNullOrEmpty(defaultClusterName))
+        {
+            // set default cluster in globals manually
+            globals = globals.WithCluster(new ClusterSymbol(defaultClusterName));
         }
 
         // now do the actual analysis ...
@@ -222,19 +231,19 @@ examples:
    klint -connection ""https://help.kusto.windows.net;Fed=true"" -generate
 ";
 
-    private static async Task GenerateCacheAsync(CachedServerSymbolLoader loader, CancellationToken cancellationToken)
+    private static async Task GenerateCacheAsync(CachedSymbolLoader loader, CancellationToken cancellationToken)
     {
-        var databaseNames = await loader.ServerLoader.GetDatabaseNamesAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        var databaseNames = await loader.ServerLoader.LoadDatabaseNamesAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
         if (databaseNames != null)
         {
             foreach (var db in databaseNames)
             {
-                await GenerateCachedDatabaseSchema(loader, db, cancellationToken);
+                await GenerateCachedDatabaseSchema(loader, db.Name, cancellationToken);
             }
         }
     }
 
-    private static async Task GenerateCachedDatabaseSchema(CachedServerSymbolLoader loader, string databaseName, CancellationToken cancellationToken)
+    private static async Task GenerateCachedDatabaseSchema(CachedSymbolLoader loader, string databaseName, CancellationToken cancellationToken)
     {
         var db = await loader.ServerLoader.LoadDatabaseAsync(databaseName, cancellationToken: cancellationToken).ConfigureAwait(false);
         if (db != null)

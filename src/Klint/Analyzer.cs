@@ -1,6 +1,6 @@
-﻿using Kushy;
-using Kusto.Language;
+﻿using Kusto.Language;
 using Kusto.Language.Editor;
+using Kusto.Toolkit;
 
 namespace Klint;
 
@@ -22,7 +22,7 @@ public class Analyzer
 
         if (_resolver != null)
         {
-            script = await _resolver.AddReferencedDatabasesAsync(script, cancellationToken: ct);
+            script = await _resolver.AddReferencedDatabasesAsync(script, cancellationToken: ct).ConfigureAwait(false);
             _globals = script.Globals;
         }
 
