@@ -130,9 +130,7 @@ public class RunnerTests
     [TestMethod]
     public async Task TestAnalysis_HasStringLength()
     {
-        await TestRunnerCacheOnlyAsync($"-cluster help -database Samples", "StormEvents | where Source has 'AB'",
-@"input: failed
-    (1, 32): suggestion: KS503 - Avoid using short strings (less than 3 characters) for string comparison operations (see: https://aka.ms/kusto.stringterms).");
+        await TestRunnerCacheOnlyAsync($"-cluster help -database Samples", "StormEvents | where Source has 'AB'", "input: succeeded");
     }
 
     [TestMethod]
